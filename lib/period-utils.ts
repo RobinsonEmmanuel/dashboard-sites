@@ -176,23 +176,26 @@ export function shiftYearBack(start: string, end: string): { n1Start: string; n1
  * @param periodValue Pour week: '2026-W10', month: '2026-03', year: '2026'
  * @param customStart Pour custom: 'YYYY-MM-DD'
  * @param customEnd   Pour custom: 'YYYY-MM-DD'
+ * @param todayStrOverride Remplace "aujourd'hui" (YYYY-MM-DD). Utile pour éviter les décalages timezone.
  */
 export function resolvePeriod(
   periodType: string,
   periodValue?: string | null,
   customStart?: string | null,
   customEnd?: string | null,
+  todayStrOverride?: string | null,
 ): ResolvedPeriod {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayStrOverride ?? new Date().toISOString().slice(0, 10);
 
   if (periodType === 'week' && periodValue) {
     const m = periodValue.match(/^(\d{4})-W(\d{2})$/);
     if (m) {
       const { start, end } = isoWeekToDates(parseInt(m[1]), parseInt(m[2]));
+      const endClamped = end > today ? today : end;
       const { week } = getISOWeek(new Date(start));
       return {
         startStr: start,
-        endStr:   end,
+        endStr:   endClamped,
         label:    `Semaine ${week} (${start.slice(5).split('-').reverse().join('/')} – ${end.slice(5).split('-').reverse().join('/')})`,
         granularity: 'day',
       };
@@ -204,13 +207,16 @@ export function resolvePeriod(
     if (m) {
       const year  = parseInt(m[1]);
       const month = parseInt(m[2]) - 1;
-      const start = new Date(year, month, 1);
-      const end   = new Date(year, month + 1, 0); // dernier jour du mois
-      const startStr = start.toISOString().slice(0, 10);
-      const endStr   = end.toISOString().slice(0, 10);
+      const monthNum = month + 1;
+      // Important: construire les bornes en YYYY-MM-DD sans passer par Date locale + toISOString,
+      // sinon décalage d'un jour possible selon la timezone (ex: 2026-03 devient 2026-02-28 → 2026-03-30).
+      const startStr = `${year}-${String(monthNum).padStart(2, '0')}-01`;
+      const lastDay = new Date(Date.UTC(year, monthNum, 0)).getUTCDate(); // dernier jour du mois en UTC
+      const endStrRaw = `${year}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      const endClamped = endStrRaw > today ? today : endStrRaw;
       return {
         startStr,
-        endStr,
+        endStr:   endClamped,
         label:    `${FR_MONTHS[month]} ${year}`,
         granularity: 'day',
       };
@@ -220,9 +226,11 @@ export function resolvePeriod(
   if (periodType === 'year' && periodValue) {
     const year = parseInt(periodValue);
     if (!isNaN(year)) {
+      const endStrRaw = `${year}-12-31`;
+      const endClamped = endStrRaw > today ? today : endStrRaw;
       return {
         startStr:    `${year}-01-01`,
-        endStr:      `${year}-12-31`,
+        endStr:      endClamped,
         label:       String(year),
         granularity: 'month',
       };

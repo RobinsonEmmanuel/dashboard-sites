@@ -18,9 +18,11 @@ import {
   Tooltip,
   Legend,
 } from 'recharts';
-import PeriodSelector from '@/components/PeriodSelector';
-import type { PeriodPreset, PresetRange } from '@/lib/period-utils';
-import { resolvePreset } from '@/lib/period-utils';
+import RevenuePeriodSelector, {
+  buildPeriodParams,
+  getInitialPeriod,
+  type PeriodState,
+} from '@/components/RevenuePeriodSelector';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,10 +33,14 @@ interface KpiSnapshot {
   impressions: number;
   ctr: number;
   position: number;
+  promisesAmount: number;
+  promisesRpm: number | null;
 }
 
 interface StatsData {
-  period: string;
+  periodType?: string;
+  periodValue?: string;
+  label?: string;
   days: number;
   range: { start: string; end: string };
   current: KpiSnapshot;
@@ -44,12 +50,14 @@ interface StatsData {
 
 interface ChartPoint {
   key: string;
-  sessions: number;
-  sessionsPY: number;
-  clicks: number;
-  clicksPY: number;
-  impressions: number;
-  impressionsPY: number;
+  sessions: number | null;
+  sessionsPY: number | null;
+  clicks: number | null;
+  clicksPY: number | null;
+  impressions: number | null;
+  impressionsPY: number | null;
+  promises: number | null;
+  promisesPY: number | null;
 }
 
 interface ChartData {
@@ -78,6 +86,18 @@ function fmtPct(n: number): string {
 
 function fmtPos(n: number): string {
   return n.toFixed(1);
+}
+
+function fmtEur(n: number): string {
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'currency',
+    currency: 'EUR',
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function fmtRpmEur(n: number): string {
+  return `${fmtEur(n)} / 1k`;
 }
 
 
@@ -145,7 +165,9 @@ function EvolutionChart({
   dataKeyPY: keyof ChartPoint;
   formatter?: (v: number) => string;
 }) {
-  if (!data.length) {
+  const effectiveData = data.filter((d) => d[dataKey] != null || d[dataKeyPY] != null);
+
+  if (!effectiveData.length) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <p className="text-sm font-semibold text-gray-700 mb-4">{title}</p>
@@ -162,7 +184,7 @@ function EvolutionChart({
     <div className="bg-white rounded-xl border border-gray-200 p-5">
       <p className="text-sm font-semibold text-gray-700 mb-4">{title}</p>
       <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={data} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
+        <LineChart data={effectiveData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
           <XAxis
             dataKey="key"
@@ -171,7 +193,10 @@ function EvolutionChart({
           />
           <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} tickFormatter={fmt} />
           <Tooltip
-            formatter={(v) => [fmt(v as number), '']}
+            formatter={(v) => {
+              if (v == null) return ['—', ''];
+              return [fmt(Number(v)), ''];
+            }}
             contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
           />
           <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -203,10 +228,15 @@ function EvolutionChart({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OverviewPage() {
-  const [preset, setPreset] = useState<PeriodPreset>('current-month');
-  const [range, setRange]   = useState<PresetRange>(() => resolvePreset('current-month'));
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd,   setCustomEnd]   = useState('');
+  const todayLocalStr = (() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  })();
+
+  const [period, setPeriod] = useState<PeriodState>(() => getInitialPeriod());
   const [siteId, setSiteId] = useState('');
   const [sites, setSites] = useState<Site[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
@@ -227,12 +257,9 @@ export default function OverviewPage() {
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams({ preset });
-      if (preset === 'custom') {
-        params.set('start', customStart);
-        params.set('end', customEnd);
-      }
+      const params = buildPeriodParams(period);
       if (siteId) params.set('siteId', siteId);
+      params.set('today', todayLocalStr);
 
       const [statsRes, chartRes] = await Promise.all([
         fetch(`/api/overview/stats?${params}`),
@@ -252,7 +279,7 @@ export default function OverviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [preset, customStart, customEnd, siteId]);
+  }, [period, siteId, todayLocalStr]);
 
   const syncAndReload = useCallback(async () => {
     setSyncing(true);
@@ -290,7 +317,7 @@ export default function OverviewPage() {
           <h1 className="text-2xl font-bold text-gray-900">Vue d'ensemble</h1>
           {stats && (
             <p className="text-gray-500 mt-1 text-sm">
-              {range.label} · {stats.range.start} → {stats.range.end} · {stats.days} j
+              {stats.label} · {stats.range.start} → {stats.range.end} · {stats.days} j
             </p>
           )}
         </div>
@@ -314,16 +341,7 @@ export default function OverviewPage() {
 
       {/* Filtres */}
       <div className="flex flex-wrap items-start gap-4 mb-7">
-        <PeriodSelector
-          value={preset}
-          customStart={customStart}
-          customEnd={customEnd}
-          onChange={(p, r, cs, ce) => {
-            setPreset(p);
-            setRange(r);
-            if (p === 'custom') { setCustomStart(cs ?? ''); setCustomEnd(ce ?? ''); }
-          }}
-        />
+        <RevenuePeriodSelector period={period} onChange={setPeriod} />
 
         <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 self-start">
           <FunnelIcon className="w-4 h-4 text-gray-400" />
@@ -348,7 +366,7 @@ export default function OverviewPage() {
 
       {loading && !stats ? (
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-          {Array.from({ length: 6 }).map((_, i) => (
+          {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-gray-200 p-5">
               <div className="h-4 bg-gray-100 rounded w-24 mb-3 animate-pulse" />
               <div className="h-8 bg-gray-100 rounded w-32 animate-pulse" />
@@ -414,6 +432,27 @@ export default function OverviewPage() {
             </div>
           </div>
 
+          {/* Section Promesses */}
+          <div className="mb-2">
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Promesses</p>
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+              <KpiCard
+                label="Montant des promesses"
+                value={cur.promisesAmount ?? 0}
+                format={fmtEur}
+                delta={pct(cur.promisesAmount ?? 0, n1?.promisesAmount ?? 0)}
+                deltaLabel="N-1"
+              />
+              <KpiCard
+                label="RPM promesses"
+                value={cur.promisesRpm ?? 0}
+                format={fmtRpmEur}
+                delta={pct(cur.promisesRpm ?? 0, n1?.promisesRpm ?? 0)}
+                deltaLabel="N-1"
+              />
+            </div>
+          </div>
+
           {/* Graphiques */}
           {chart && chart.points.length > 0 && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -434,6 +473,13 @@ export default function OverviewPage() {
                 title="Impressions GSC"
                 dataKey="impressions"
                 dataKeyPY="impressionsPY"
+              />
+              <EvolutionChart
+                data={chart.points}
+                title="Promesses (commission estimée)"
+                dataKey="promises"
+                dataKeyPY="promisesPY"
+                formatter={(v) => fmtEur(v)}
               />
             </div>
           )}

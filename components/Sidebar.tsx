@@ -7,6 +7,7 @@ import {
   TableCellsIcon,
   MagnifyingGlassCircleIcon,
   CurrencyEuroIcon,
+  CalendarDaysIcon,
   GlobeAltIcon,
   ArrowPathIcon,
   ChevronLeftIcon,
@@ -20,6 +21,7 @@ const menuItems = [
   { name: 'Comparaison', icon: TableCellsIcon, href: '/sites-comparison' },
   { name: 'Performance SEO', icon: MagnifyingGlassCircleIcon, href: '/seo' },
   { name: 'Revenus', icon: CurrencyEuroIcon, href: '/revenue' },
+  { name: 'Promesses', icon: CalendarDaysIcon, href: '/promises' },
 ];
 
 const bottomItems = [

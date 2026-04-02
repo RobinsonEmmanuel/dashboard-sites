@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/mongodb';
-import { resolvePreset, shiftYearBack } from '@/lib/period-utils';
-import type { PeriodPreset } from '@/lib/period-utils';
+import { resolvePeriod, shiftYearBack } from '@/lib/period-utils';
 
 function pct(cur: number, prev: number): number | null {
   if (!prev) return null;
@@ -12,26 +11,53 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
 
-    const preset = (searchParams.get('preset') ?? 'current-month') as PeriodPreset;
+    const periodType = searchParams.get('periodType') ?? 'month';
+    const periodValue = searchParams.get('periodValue') ?? undefined;
     const customStart = searchParams.get('start') ?? undefined;
     const customEnd   = searchParams.get('end')   ?? undefined;
-    const { start, end } = resolvePreset(preset, customStart, customEnd);
-    const { n1Start: startN1, n1End: endN1 } = shiftYearBack(start, end);
+    const { startStr, endStr } = resolvePeriod(periodType, periodValue, customStart, customEnd);
+    const start = startStr;
+    const end = endStr;
 
     const db = await getDatabase();
+
+    const trafficCol = db.collection('traffic_daily');
+    const gscCol = db.collection('gsc_daily');
+
+    const getLastDate = async (col: typeof trafficCol, from: string, to: string) => {
+      const docs = await col
+        .find({ dateStr: { $gte: from, $lte: to } }, { projection: { dateStr: 1 } })
+        .sort({ dateStr: -1 })
+        .limit(1)
+        .toArray();
+      return docs[0]?.dateStr ? String(docs[0].dateStr) : null;
+    };
+
+    const clampEndToLastAvailable = async (from: string, to: string) => {
+      const [lastTraffic, lastGsc] = await Promise.all([
+        getLastDate(trafficCol, from, to),
+        getLastDate(gscCol, from, to),
+      ]);
+      if (lastTraffic && lastGsc) return lastTraffic < lastGsc ? lastTraffic : lastGsc;
+      return lastTraffic ?? lastGsc ?? to;
+    };
+
+    const endEff = await clampEndToLastAvailable(start, end);
+    const { n1Start: startN1, n1End: endN1 } = shiftYearBack(start, endEff);
+    const endN1Eff = await clampEndToLastAvailable(startN1, endN1);
 
     // ── Agrégation trafic par site ────────────────────────────────────────────
     const [trafficCur, trafficN1, gscCur, gscN1] = await Promise.all([
       db.collection('traffic_daily').aggregate([
-        { $match: { dateStr: { $gte: start, $lte: end } } },
+        { $match: { dateStr: { $gte: start, $lte: endEff } } },
         { $group: { _id: '$siteId', siteName: { $first: '$siteName' }, shortName: { $first: '$shortName' }, sessions: { $sum: '$sessions' }, outboundClicks: { $sum: '$outboundClicks' } } },
       ]).toArray(),
       db.collection('traffic_daily').aggregate([
-        { $match: { dateStr: { $gte: startN1, $lte: endN1 } } },
+        { $match: { dateStr: { $gte: startN1, $lte: endN1Eff } } },
         { $group: { _id: '$siteId', sessions: { $sum: '$sessions' }, outboundClicks: { $sum: '$outboundClicks' } } },
       ]).toArray(),
       db.collection('gsc_daily').aggregate([
-        { $match: { dateStr: { $gte: start, $lte: end } } },
+        { $match: { dateStr: { $gte: start, $lte: endEff } } },
         { $group: {
           _id: '$siteId',
           clicks: { $sum: '$clicks' },
@@ -42,7 +68,7 @@ export async function GET(request: NextRequest) {
         } },
       ]).toArray(),
       db.collection('gsc_daily').aggregate([
-        { $match: { dateStr: { $gte: startN1, $lte: endN1 } } },
+        { $match: { dateStr: { $gte: startN1, $lte: endN1Eff } } },
         { $group: {
           _id: '$siteId',
           clicks: { $sum: '$clicks' },
@@ -82,7 +108,7 @@ export async function GET(request: NextRequest) {
     // Trier par sessions décroissant par défaut
     rows.sort((a, b) => b.sessions - a.sessions);
 
-    return NextResponse.json({ preset, range: { start, end }, rows });
+    return NextResponse.json({ periodType, range: { start, end: endEff }, rows });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[SITES-COMPARISON]', msg);

@@ -30,7 +30,20 @@ export async function GET(req: NextRequest) {
     const customEnd   = searchParams.get('end');
     const siteFilter  = searchParams.get('site');
 
-    const { startStr, endStr } = resolvePeriod(periodType, periodValue, customStart, customEnd);
+    const todayStr = searchParams.get('today') ?? new Date().toISOString().slice(0, 10);
+    const resolved = resolvePeriod(periodType, periodValue, customStart, customEnd, todayStr);
+    const { startStr } = resolved;
+    let { endStr } = resolved;
+
+    // Ne pas inclure le jour en cours dans les agrégats (N et N-1)
+    const yesterdayDate = new Date(todayStr + 'T00:00:00Z');
+    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
+    const yesterdayStr = yesterdayDate.toISOString().slice(0, 10);
+
+    if (resolved.granularity === 'day' && endStr >= todayStr) {
+      endStr = yesterdayStr;
+    }
+
     const n1StartStr = shiftYearBack(startStr);
     const n1EndStr   = shiftYearBack(endStr);
 

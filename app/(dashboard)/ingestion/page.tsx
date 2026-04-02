@@ -8,6 +8,7 @@ import {
   ClockIcon,
   BoltIcon,
 } from '@heroicons/react/24/outline';
+import RevenueCsvImport from '@/components/RevenueCsvImport';
 
 type SiteResultGA4 = {
   site: string;
@@ -230,6 +231,10 @@ export default function IngestionPage() {
         <ArrowPathIcon className={`w-4 h-4 ${isAnyRunning ? 'animate-spin' : ''}`} />
         {isAnyRunning ? 'Synchronisation en cours…' : 'Tout synchroniser'}
       </button>
+
+      <div className="mt-8">
+        <RevenueCsvImport />
+      </div>
     </div>
   );
 }

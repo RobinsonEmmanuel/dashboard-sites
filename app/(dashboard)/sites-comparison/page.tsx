@@ -11,9 +11,11 @@ import {
   ChevronDownIcon,
   ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline';
-import PeriodSelector from '@/components/PeriodSelector';
-import type { PeriodPreset, PresetRange } from '@/lib/period-utils';
-import { resolvePreset } from '@/lib/period-utils';
+import RevenuePeriodSelector, {
+  buildPeriodParams,
+  getInitialPeriod,
+  type PeriodState,
+} from '@/components/RevenuePeriodSelector';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,10 +73,7 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SitesComparisonPage() {
-  const [preset, setPreset] = useState<PeriodPreset>('current-month');
-  const [presetRange, setPresetRange] = useState<PresetRange>(() => resolvePreset('current-month'));
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd,   setCustomEnd]   = useState('');
+  const [period, setPeriod] = useState<PeriodState>(() => getInitialPeriod());
   const [rows, setRows] = useState<SiteRow[]>([]);
   const [range, setRange] = useState({ start: '', end: '' });
   const [loading, setLoading] = useState(true);
@@ -88,11 +87,7 @@ export default function SitesComparisonPage() {
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams({ preset });
-      if (preset === 'custom') {
-        params.set('start', customStart);
-        params.set('end', customEnd);
-      }
+      const params = buildPeriodParams(period);
       const res = await fetch(`/api/sites-comparison?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -103,7 +98,7 @@ export default function SitesComparisonPage() {
     } finally {
       setLoading(false);
     }
-  }, [preset, customStart, customEnd]);
+  }, [period]);
 
   // Déclenche une ingestion incrémentale GA4 + GSC puis recharge les données
   const syncAndReload = useCallback(async () => {
@@ -164,7 +159,8 @@ export default function SitesComparisonPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `comparaison-sites-${preset}-${range.start}.csv`;
+    const periodLabel = period.type === 'custom' ? `custom-${period.customStart}` : `${period.type}-${period.value}`;
+    a.download = `comparaison-sites-${periodLabel}-${range.start}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -188,7 +184,7 @@ export default function SitesComparisonPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Comparaison des sites</h1>
           {range.start && (
-            <p className="text-gray-500 mt-1 text-sm">{presetRange.label} · {range.start} → {range.end}</p>
+            <p className="text-gray-500 mt-1 text-sm">{range.start} → {range.end}</p>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -219,16 +215,7 @@ export default function SitesComparisonPage() {
 
       {/* Période */}
       <div className="mb-6">
-        <PeriodSelector
-          value={preset}
-          customStart={customStart}
-          customEnd={customEnd}
-          onChange={(p, r, cs, ce) => {
-            setPreset(p);
-            setPresetRange(r);
-            if (p === 'custom') { setCustomStart(cs ?? ''); setCustomEnd(ce ?? ''); }
-          }}
-        />
+        <RevenuePeriodSelector period={period} onChange={setPeriod} />
       </div>
 
       {error && (
