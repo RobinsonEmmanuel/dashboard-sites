@@ -135,7 +135,8 @@ export async function GET(req: NextRequest) {
         cancelRate,
         cancelRateN1,
       };
-    }).filter((r) => r.bookingsTotal > 0 || r.revenueN1 > 0);
+    // Ne pas masquer un partenaire si le revenu N existe (cas courant : bookingTotal agrégé à 0 par incohérence de données)
+    }).filter((r) => r.bookingsTotal > 0 || r.revenue > 0 || r.revenueN1 > 0);
 
     const totalRevenue    = byPartnerTable.reduce((s, r) => s + r.revenue, 0);
     const totalCancelled  = byPartnerTable.reduce((s, r) => s + r.cancelledCount, 0);

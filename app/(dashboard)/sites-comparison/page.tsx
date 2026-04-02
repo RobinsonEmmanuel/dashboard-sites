@@ -11,6 +11,9 @@ import {
   ChevronDownIcon,
   ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline';
+import PeriodSelector from '@/components/PeriodSelector';
+import type { PeriodPreset, PresetRange } from '@/lib/period-utils';
+import { resolvePreset } from '@/lib/period-utils';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,13 +34,6 @@ interface SiteRow {
 
 type SortKey = keyof SiteRow;
 type SortDir = 'asc' | 'desc';
-
-const PERIODS = [
-  { label: '7 jours', value: '7d' },
-  { label: '30 jours', value: '30d' },
-  { label: '90 jours', value: '90d' },
-  { label: '12 mois', value: '365d' },
-];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -75,10 +71,15 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SitesComparisonPage() {
-  const [period, setPeriod] = useState('30d');
+  const [preset, setPreset] = useState<PeriodPreset>('current-month');
+  const [presetRange, setPresetRange] = useState<PresetRange>(() => resolvePreset('current-month'));
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd,   setCustomEnd]   = useState('');
   const [rows, setRows] = useState<SiteRow[]>([]);
   const [range, setRange] = useState({ start: '', end: '' });
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('sessions');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -87,7 +88,12 @@ export default function SitesComparisonPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`/api/sites-comparison?period=${period}`);
+      const params = new URLSearchParams({ preset });
+      if (preset === 'custom') {
+        params.set('start', customStart);
+        params.set('end', customEnd);
+      }
+      const res = await fetch(`/api/sites-comparison?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setRows(data.rows ?? []);
@@ -97,7 +103,31 @@ export default function SitesComparisonPage() {
     } finally {
       setLoading(false);
     }
-  }, [period]);
+  }, [preset, customStart, customEnd]);
+
+  // Déclenche une ingestion incrémentale GA4 + GSC puis recharge les données
+  const syncAndReload = useCallback(async () => {
+    setSyncing(true);
+    setSyncMsg('Synchronisation GA4 + GSC en cours…');
+    setError('');
+    try {
+      const [ga4Res, gscRes] = await Promise.all([
+        fetch('/api/ingest/ga4', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
+        fetch('/api/ingest/gsc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
+      ]);
+      const ga4 = await ga4Res.json();
+      const gsc = await gscRes.json();
+      if (ga4.error) throw new Error(`GA4 : ${ga4.error}`);
+      if (gsc.error) throw new Error(`GSC : ${gsc.error}`);
+      setSyncMsg(`Synchronisé — GA4 : ${ga4.totalRecords ?? 0} enreg., GSC : ${(gsc.totalDaily ?? 0) + (gsc.totalPages ?? 0)} enreg.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erreur de synchronisation');
+      setSyncMsg('');
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -134,7 +164,7 @@ export default function SitesComparisonPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `comparaison-sites-${period}-${range.start}.csv`;
+    a.download = `comparaison-sites-${preset}-${range.start}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -158,10 +188,15 @@ export default function SitesComparisonPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Comparaison des sites</h1>
           {range.start && (
-            <p className="text-gray-500 mt-1 text-sm">{range.start} → {range.end}</p>
+            <p className="text-gray-500 mt-1 text-sm">{presetRange.label} · {range.start} → {range.end}</p>
           )}
         </div>
         <div className="flex items-center gap-2">
+          {syncMsg && (
+            <span className="text-xs text-green-600 bg-green-50 border border-green-200 px-2 py-1 rounded-lg">
+              {syncMsg}
+            </span>
+          )}
           <button
             onClick={exportCsv}
             disabled={!rows.length}
@@ -171,29 +206,29 @@ export default function SitesComparisonPage() {
             CSV
           </button>
           <button
-            onClick={load}
-            disabled={loading}
+            onClick={syncAndReload}
+            disabled={syncing || loading}
+            title="Synchronise les derniers jours depuis GA4 + GSC puis rafraîchit le tableau"
             className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-40"
           >
-            <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Actualiser
+            <ArrowPathIcon className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Synchronisation…' : 'Actualiser'}
           </button>
         </div>
       </div>
 
       {/* Période */}
-      <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1 w-fit mb-6">
-        {PERIODS.map((p) => (
-          <button
-            key={p.value}
-            onClick={() => setPeriod(p.value)}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              period === p.value ? 'bg-[#191E55] text-white' : 'text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
+      <div className="mb-6">
+        <PeriodSelector
+          value={preset}
+          customStart={customStart}
+          customEnd={customEnd}
+          onChange={(p, r, cs, ce) => {
+            setPreset(p);
+            setPresetRange(r);
+            if (p === 'custom') { setCustomStart(cs ?? ''); setCustomEnd(ce ?? ''); }
+          }}
+        />
       </div>
 
       {error && (

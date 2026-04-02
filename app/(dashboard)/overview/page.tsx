@@ -18,6 +18,9 @@ import {
   Tooltip,
   Legend,
 } from 'recharts';
+import PeriodSelector from '@/components/PeriodSelector';
+import type { PeriodPreset, PresetRange } from '@/lib/period-utils';
+import { resolvePreset } from '@/lib/period-utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,12 +80,6 @@ function fmtPos(n: number): string {
   return n.toFixed(1);
 }
 
-const PERIODS = [
-  { label: '7 jours', value: '7d' },
-  { label: '30 jours', value: '30d' },
-  { label: '90 jours', value: '90d' },
-  { label: '12 mois', value: '365d' },
-];
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 
@@ -206,12 +203,17 @@ function EvolutionChart({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OverviewPage() {
-  const [period, setPeriod] = useState('30d');
+  const [preset, setPreset] = useState<PeriodPreset>('current-month');
+  const [range, setRange]   = useState<PresetRange>(() => resolvePreset('current-month'));
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd,   setCustomEnd]   = useState('');
   const [siteId, setSiteId] = useState('');
   const [sites, setSites] = useState<Site[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [chart, setChart] = useState<ChartData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const [error, setError] = useState('');
 
   // Charger la liste des sites pour le filtre
@@ -225,7 +227,11 @@ export default function OverviewPage() {
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams({ period });
+      const params = new URLSearchParams({ preset });
+      if (preset === 'custom') {
+        params.set('start', customStart);
+        params.set('end', customEnd);
+      }
       if (siteId) params.set('siteId', siteId);
 
       const [statsRes, chartRes] = await Promise.all([
@@ -246,7 +252,30 @@ export default function OverviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [period, siteId]);
+  }, [preset, customStart, customEnd, siteId]);
+
+  const syncAndReload = useCallback(async () => {
+    setSyncing(true);
+    setSyncMsg('Synchronisation en cours…');
+    setError('');
+    try {
+      const [ga4Res, gscRes] = await Promise.all([
+        fetch('/api/ingest/ga4', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
+        fetch('/api/ingest/gsc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
+      ]);
+      const ga4 = await ga4Res.json();
+      const gsc = await gscRes.json();
+      if (ga4.error) throw new Error(`GA4 : ${ga4.error}`);
+      if (gsc.error) throw new Error(`GSC : ${gsc.error}`);
+      setSyncMsg(`Synchronisé — GA4 : ${ga4.totalRecords ?? 0} enreg., GSC : ${(gsc.totalDaily ?? 0) + (gsc.totalPages ?? 0)} enreg.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erreur de synchronisation');
+      setSyncMsg('');
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -261,39 +290,42 @@ export default function OverviewPage() {
           <h1 className="text-2xl font-bold text-gray-900">Vue d'ensemble</h1>
           {stats && (
             <p className="text-gray-500 mt-1 text-sm">
-              {stats.range.start} → {stats.range.end} · {stats.days} jours
+              {range.label} · {stats.range.start} → {stats.range.end} · {stats.days} j
             </p>
           )}
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-40"
-        >
-          <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Actualiser
-        </button>
+        <div className="flex items-center gap-2">
+          {syncMsg && (
+            <span className="text-xs text-green-600 bg-green-50 border border-green-200 px-2 py-1 rounded-lg">
+              {syncMsg}
+            </span>
+          )}
+          <button
+            onClick={syncAndReload}
+            disabled={syncing || loading}
+            title="Synchronise depuis la dernière date en base (mode smart)"
+            className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-40"
+          >
+            <ArrowPathIcon className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Synchronisation…' : 'Actualiser'}
+          </button>
+        </div>
       </div>
 
       {/* Filtres */}
-      <div className="flex flex-wrap items-center gap-3 mb-7">
-        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1">
-          {PERIODS.map((p) => (
-            <button
-              key={p.value}
-              onClick={() => setPeriod(p.value)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                period === p.value
-                  ? 'bg-[#191E55] text-white'
-                  : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex flex-wrap items-start gap-4 mb-7">
+        <PeriodSelector
+          value={preset}
+          customStart={customStart}
+          customEnd={customEnd}
+          onChange={(p, r, cs, ce) => {
+            setPreset(p);
+            setRange(r);
+            if (p === 'custom') { setCustomStart(cs ?? ''); setCustomEnd(ce ?? ''); }
+          }}
+        />
 
-        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 self-start">
           <FunnelIcon className="w-4 h-4 text-gray-400" />
           <select
             value={siteId}

@@ -129,6 +129,12 @@ export function parseBookingCsv(
   for (const row of rows) {
     const get = makeGet(row);
 
+    const keys = Object.keys(row);
+    const getExact = (target: string) => {
+      const k = keys.find((kk) => kk.toLowerCase().trim() === target.toLowerCase());
+      return k ? row[k] : '';
+    };
+
     const bookingNumber = get('booking number') || get('booking id') || get('order id') || get('reservation id');
 
     const bookingDateRaw = get('booking date') || get('date');
@@ -206,6 +212,9 @@ export function parseBookingCsv(
     const siteName    = (siteMap ?? BOOKING_AFFILIATE_MAP)[affiliateId] ?? undefined;
     const orderId     = bookingNumber || `bk-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const reservationCity    = (getExact('City') || get('city') || '').trim() || undefined;
+    const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
     records.push({
       partner: 'booking',
       date: new Date(dateStr),
@@ -215,6 +224,8 @@ export function parseBookingCsv(
       orderId,
       affiliateId: affiliateId || undefined,
       productName: get('property name') || get('hotel name') || undefined,
+      reservationCity,
+      reservationCountry,
       commissionActual,
       commissionMin: commissionMin !== undefined && commissionMin > 0 ? commissionMin : undefined,
       commissionN1,

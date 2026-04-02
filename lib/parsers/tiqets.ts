@@ -26,6 +26,11 @@ export function parseTiqetsCsv(text: string, siteMap?: Record<string, string>): 
       return key ? row[key] : '';
     };
 
+    const getExact = (target: string) => {
+      const key = keys.find((k) => k.toLowerCase().trim() === target.toLowerCase());
+      return key ? row[key] : '';
+    };
+
     const status = get('status');
     if (status && status.toLowerCase() !== 'fulfilled') {
       skipped++;
@@ -52,14 +57,21 @@ export function parseTiqetsCsv(text: string, siteMap?: Record<string, string>): 
 
     const orderId = get('order id') || get('booking id') || get('id') || `tq-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
+    const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
     records.push({
       partner: 'tiqets',
       date: new Date(dateStr),
       dateStr,
       orderId,
       productName: get('product name') || get('product') || undefined,
+      // On stocke aussi la clé brute (campaign) pour pouvoir analyser/mapper les "non attribués"
+      affiliateId: campaign || undefined,
       commissionActual: commission,
       siteName,
+      reservationCity,
+      reservationCountry,
       status,
       importedAt: new Date(),
     });

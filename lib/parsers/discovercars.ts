@@ -25,6 +25,11 @@ export function parseDiscoverCarsCsv(text: string, siteMap?: Record<string, stri
       return key ? row[key] : '';
     };
 
+    const getExact = (target: string) => {
+      const key = keys.find((k) => k.toLowerCase().trim() === target.toLowerCase());
+      return key ? row[key] : '';
+    };
+
     const status = get('status');
     // Exclure les annulations si le statut est présent
     if (status && (status.toLowerCase().includes('cancel') || status.toLowerCase().includes('refund'))) {
@@ -51,6 +56,9 @@ export function parseDiscoverCarsCsv(text: string, siteMap?: Record<string, stri
 
     const orderId = get('booking id') || get('order id') || get('id') || `dc-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
+    const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
     records.push({
       partner: 'discovercars',
       date: new Date(dateStr),
@@ -60,6 +68,8 @@ export function parseDiscoverCarsCsv(text: string, siteMap?: Record<string, stri
       productName: get('car model') || get('product') || undefined,
       commissionActual: commission,
       siteName,
+      reservationCity,
+      reservationCountry,
       status: status || undefined,
       importedAt: new Date(),
     });

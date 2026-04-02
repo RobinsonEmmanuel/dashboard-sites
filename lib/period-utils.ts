@@ -87,6 +87,86 @@ export function getAvailableYears(): Array<{ label: string; value: string }> {
   return years;
 }
 
+// ── Preset period resolver (for Overview & Comparison pages) ─────────────────
+
+export type PeriodPreset =
+  | 'current-week' | 'last-week'
+  | 'current-month' | 'last-month'
+  | 'current-year' | 'last-year'
+  | 'custom';
+
+export interface PresetRange {
+  start: string;  // YYYY-MM-DD
+  end: string;    // YYYY-MM-DD
+  label: string;
+}
+
+export function resolvePreset(
+  preset: PeriodPreset,
+  customStart?: string,
+  customEnd?: string,
+): PresetRange {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const clamp = (s: string) => s > todayStr ? todayStr : s;
+
+  switch (preset) {
+    case 'current-week': {
+      const { week, isoYear } = getISOWeek(today);
+      const { start, end } = isoWeekToDates(isoYear, week);
+      return { start, end: clamp(end), label: 'Semaine en cours' };
+    }
+    case 'last-week': {
+      const { week, isoYear } = getISOWeek(today);
+      let w = week - 1, y = isoYear;
+      if (w === 0) { y--; w = getISOWeek(new Date(y, 11, 28)).week; }
+      const { start, end } = isoWeekToDates(y, w);
+      return { start, end, label: 'Semaine -1' };
+    }
+    case 'current-month': {
+      const y = today.getFullYear(), m = today.getMonth();
+      const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      return { start, end: clamp(end), label: 'Mois en cours' };
+    }
+    case 'last-month': {
+      const d = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const y = d.getFullYear(), m = d.getMonth();
+      const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      return { start, end, label: 'Mois -1' };
+    }
+    case 'current-year': {
+      const y = today.getFullYear();
+      return { start: `${y}-01-01`, end: todayStr, label: String(y) };
+    }
+    case 'last-year': {
+      const y = today.getFullYear() - 1;
+      return { start: `${y}-01-01`, end: `${y}-12-31`, label: String(y) };
+    }
+    case 'custom':
+      return {
+        start: customStart || todayStr,
+        end:   clamp(customEnd || todayStr),
+        label: customStart && customEnd
+          ? `${customStart.split('-').reverse().join('/')} – ${customEnd.split('-').reverse().join('/')}`
+          : 'Personnalisée',
+      };
+  }
+}
+
+/** N-1 d'une plage : même période décalée d'un an en arrière */
+export function shiftYearBack(start: string, end: string): { n1Start: string; n1End: string } {
+  const shift = (d: string, years: number) => {
+    const dt = new Date(d + 'T00:00:00Z');
+    dt.setUTCFullYear(dt.getUTCFullYear() + years);
+    return dt.toISOString().slice(0, 10);
+  };
+  return { n1Start: shift(start, -1), n1End: shift(end, -1) };
+}
+
 // ── Period resolver ───────────────────────────────────────────────────────────
 
 /**

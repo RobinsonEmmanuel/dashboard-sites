@@ -1,23 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/mongodb';
-
-function getPeriodDates(period: string): { start: string; end: string } {
-  const end = new Date();
-  end.setUTCDate(end.getUTCDate() - 1);
-  const start = new Date(end);
-  const days = period === '7d' ? 7 : period === '30d' ? 30 : period === '90d' ? 90 : 365;
-  start.setUTCDate(end.getUTCDate() - days + 1);
-  return {
-    start: start.toISOString().split('T')[0],
-    end: end.toISOString().split('T')[0],
-  };
-}
-
-function shiftDate(dateStr: string, days: number): string {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().split('T')[0];
-}
+import { resolvePreset, shiftYearBack } from '@/lib/period-utils';
+import type { PeriodPreset } from '@/lib/period-utils';
 
 function pct(cur: number, prev: number): number | null {
   if (!prev) return null;
@@ -27,11 +11,12 @@ function pct(cur: number, prev: number): number | null {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const period = searchParams.get('period') ?? '30d';
 
-    const { start, end } = getPeriodDates(period);
-    const startN1 = shiftDate(start, -365);
-    const endN1 = shiftDate(end, -365);
+    const preset = (searchParams.get('preset') ?? 'current-month') as PeriodPreset;
+    const customStart = searchParams.get('start') ?? undefined;
+    const customEnd   = searchParams.get('end')   ?? undefined;
+    const { start, end } = resolvePreset(preset, customStart, customEnd);
+    const { n1Start: startN1, n1End: endN1 } = shiftYearBack(start, end);
 
     const db = await getDatabase();
 
@@ -97,7 +82,7 @@ export async function GET(request: NextRequest) {
     // Trier par sessions décroissant par défaut
     rows.sort((a, b) => b.sessions - a.sessions);
 
-    return NextResponse.json({ period, range: { start, end }, rows });
+    return NextResponse.json({ preset, range: { start, end }, rows });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[SITES-COMPARISON]', msg);

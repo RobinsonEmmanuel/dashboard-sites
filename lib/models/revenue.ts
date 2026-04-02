@@ -9,6 +9,10 @@ export interface AffiliationRevenue {
   dateStr: string;            // YYYY-MM-DD  (= check-in date pour Booking)
   bookingDateStr?: string;    // Booking : date à laquelle la réservation a été faite
   checkOutDateStr?: string;   // Booking : date de check-out (commission réalisée)
+  /** Booking date / reservation location (si disponible dans l'export) */
+  reservationCity?: string;
+  /** Booking date / reservation location (si disponible dans l'export) */
+  reservationCountry?: string;
   orderId: string;
   affiliateId?: string;       // Identifiant affilié brut (Booking: Affiliate ID, GYG: campaign, DC: channel)
   productName?: string;

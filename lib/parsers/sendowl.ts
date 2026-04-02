@@ -42,6 +42,11 @@ export function parseSendowlCsv(
       return key ? row[key] : '';
     };
 
+    const getExact = (target: string) => {
+      const key = keys.find((k) => k.toLowerCase().trim() === target.toLowerCase());
+      return key ? row[key] : '';
+    };
+
     // Date
     const dateRaw = get('orderdate') || get('completedat') || get('date');
     const dateStr = normalizeDate(dateRaw);
@@ -81,6 +86,9 @@ export function parseSendowlCsv(
 
     const orderId = get('sendowlorderid') || get('orderid') || `so-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
+    const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
     records.push({
       partner: 'sendowl',
       date: new Date(dateStr),
@@ -89,6 +97,8 @@ export function parseSendowlCsv(
       productName: rawItemName || undefined,
       commissionActual: isCancelled ? 0 : amount,
       siteName,
+      reservationCity,
+      reservationCountry,
       status: isCancelled ? 'Refunded' : state || undefined,
       importedAt: new Date(),
     });

@@ -62,7 +62,7 @@ const INITIAL_JOBS: Job[] = [
 
 export default function IngestionPage() {
   const [jobs, setJobs] = useState<Job[]>(INITIAL_JOBS);
-  const [mode, setMode] = useState<'incremental' | 'full'>('incremental');
+  const [mode, setMode] = useState<'incremental' | 'full' | 'smart'>('smart');
 
   const updateJob = (index: number, patch: Partial<Job>) =>
     setJobs((prev) => prev.map((j, i) => (i === index ? { ...j, ...patch } : j)));
@@ -104,7 +104,18 @@ export default function IngestionPage() {
       {/* Mode selector */}
       <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
         <p className="text-sm font-semibold text-gray-700 mb-3">Mode d'ingestion</p>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
+          <button
+            onClick={() => setMode('smart')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
+              mode === 'smart'
+                ? 'bg-[#191E55] text-white border-[#191E55]'
+                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            <BoltIcon className="w-4 h-4" />
+            Smart — depuis dernière synchro
+          </button>
           <button
             onClick={() => setMode('incremental')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
@@ -113,7 +124,7 @@ export default function IngestionPage() {
                 : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
             }`}
           >
-            <BoltIcon className="w-4 h-4" />
+            <ArrowPathIcon className="w-4 h-4" />
             Incrémental (3 derniers jours)
           </button>
           <button
@@ -128,11 +139,12 @@ export default function IngestionPage() {
             Historique complet (740 jours)
           </button>
         </div>
-        {mode === 'full' && (
-          <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
-            L'import historique peut prendre plusieurs minutes (14 sites × 2 requêtes GA4 chacun).
-          </p>
-        )}
+        <p className="text-xs mt-3 px-3 py-2 rounded-lg border
+          {mode === 'smart' ? 'text-blue-700 bg-blue-50 border-blue-200' : mode === 'full' ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-gray-500 bg-gray-50 border-gray-200'}">
+          {mode === 'smart' && 'Reprend automatiquement depuis la dernière date en base pour chaque site. Premier lancement = historique complet automatique.'}
+          {mode === 'incremental' && 'Récupère uniquement les 3 derniers jours. Utile pour les mises à jour rapides.'}
+          {mode === 'full' && "Recharge les 740 derniers jours pour tous les sites. Peut prendre plusieurs minutes."}
+        </p>
       </div>
 
       {/* Jobs */}

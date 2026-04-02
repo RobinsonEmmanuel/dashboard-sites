@@ -18,72 +18,86 @@ function parseGa4Date(str: string): Date {
   return new Date(Date.UTC(year, month, day));
 }
 
-async function fetchGa4Report(
+async function runGa4Report(
   propertyId: string,
   token: string,
-  startDate: string,
-  endDate: string,
-  eventName: string
+  body: Record<string, unknown>,
 ): Promise<Map<string, number>> {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
-  const body = {
-    dateRanges: [{ startDate, endDate }],
-    dimensions: [{ name: 'date' }],
-    metrics: [{ name: 'eventCount' }],
-    dimensionFilter: {
-      filter: {
-        fieldName: 'eventName',
-        stringFilter: { value: eventName, matchType: 'EXACT' },
-      },
-    },
-    orderBys: [{ desc: true, dimension: { dimensionName: 'date' } }],
-    limit: 50000,
-  };
-
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`GA4 API ${res.status} pour property ${propertyId}: ${text}`);
   }
-
   const data = await res.json();
   const map = new Map<string, number>();
-
   if (data.rows) {
     for (const row of data.rows) {
-      const dateKey = row.dimensionValues[0].value; // "YYYYMMDD"
+      const dateKey = row.dimensionValues[0].value as string;
       const count = parseInt(row.metricValues[0].value, 10);
       map.set(dateKey, count);
     }
   }
-
   return map;
+}
+
+/** Métrique sessions GA4 (plus fiable que eventCount session_start) */
+async function fetchSessionsMetric(
+  propertyId: string,
+  token: string,
+  startDate: string,
+  endDate: string,
+): Promise<Map<string, number>> {
+  return runGa4Report(propertyId, token, {
+    dateRanges: [{ startDate, endDate }],
+    dimensions: [{ name: 'date' }],
+    metrics: [{ name: 'sessions' }],
+    orderBys: [{ desc: true, dimension: { dimensionName: 'date' } }],
+    limit: 50000,
+  });
+}
+
+/** Nombre d'occurrences d'un événement personnalisé (ex: clic_affiliation) */
+async function fetchEventCount(
+  propertyId: string,
+  token: string,
+  startDate: string,
+  endDate: string,
+  eventName: string,
+): Promise<Map<string, number>> {
+  return runGa4Report(propertyId, token, {
+    dateRanges: [{ startDate, endDate }],
+    dimensions: [{ name: 'date' }],
+    metrics: [{ name: 'eventCount' }],
+    dimensionFilter: {
+      filter: { fieldName: 'eventName', stringFilter: { value: eventName, matchType: 'EXACT' } },
+    },
+    orderBys: [{ desc: true, dimension: { dimensionName: 'date' } }],
+    limit: 50000,
+  });
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const mode: 'incremental' | 'full' = body.mode ?? 'incremental';
-    const siteFilter: string | undefined = body.siteId; // optionnel : ingérer un seul site
+    const mode: 'incremental' | 'full' | 'smart' = body.mode ?? 'smart';
+    const siteFilter: string | undefined = body.siteId;
 
-    // Fenêtre de dates
     const endDate = new Date();
-    const startDate = new Date();
-    if (mode === 'full') {
-      startDate.setDate(endDate.getDate() - 740);
-    } else {
-      startDate.setDate(endDate.getDate() - 3); // 3 jours pour couvrir le lag GA4
-    }
-    const startDateStr = formatDate(startDate);
     const endDateStr = formatDate(endDate);
+
+    // Date de début globale pour full / fallback smart
+    const fullStartDate = new Date();
+    fullStartDate.setDate(endDate.getDate() - 740);
+    const fullStartDateStr = formatDate(fullStartDate);
+
+    const incrementalStartDate = new Date();
+    incrementalStartDate.setDate(endDate.getDate() - 3);
+    const incrementalStartDateStr = formatDate(incrementalStartDate);
 
     const db = await getDatabase();
     const sitesQuery = siteFilter
@@ -95,32 +109,61 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Aucun site actif trouvé' }, { status: 404 });
     }
 
+    // Mode smart : récupérer la dernière date ingérée par site
+    const lastDateBySite = new Map<string, string>();
+    if (mode === 'smart') {
+      const lastDates = await db.collection('traffic_daily').aggregate([
+        { $group: { _id: '$siteId', lastDate: { $max: '$dateStr' } } },
+      ]).toArray();
+      for (const r of lastDates) {
+        if (r._id && r.lastDate) lastDateBySite.set(r._id as string, r.lastDate as string);
+      }
+    }
+
     const token = await getGoogleAccessToken(GA4_SCOPES);
 
-    const results: { site: string; inserted: number; errors: string[] }[] = [];
+    const results: { site: string; inserted: number; startDate: string; errors: string[] }[] = [];
 
     for (const site of sites) {
-      const siteResult = { site: site.name, inserted: 0, errors: [] as string[] };
+      const siteResult = { site: site.name, inserted: 0, startDate: '', errors: [] as string[] };
+
+      // Calculer la date de début pour ce site
+      let startDateStr: string;
+      if (mode === 'full') {
+        startDateStr = fullStartDateStr;
+      } else if (mode === 'smart') {
+        const lastDate = lastDateBySite.get(site._id!.toString());
+        if (lastDate) {
+          // Reprendre 3 jours avant la dernière date (lag GA4 + révisions)
+          const d = new Date(lastDate + 'T00:00:00Z');
+          d.setUTCDate(d.getUTCDate() - 3);
+          startDateStr = formatDate(d);
+        } else {
+          startDateStr = fullStartDateStr; // premier import → historique complet
+        }
+      } else {
+        startDateStr = incrementalStartDateStr;
+      }
+      siteResult.startDate = startDateStr;
 
       try {
-        // Requête 1 : session_start
-        const sessionMap = await fetchGa4Report(
+        // Requête 1 : métrique sessions (plus précise que eventCount session_start)
+        const sessionMap = await fetchSessionsMetric(
           site.ga4PropertyId,
           token,
           startDateStr,
           endDateStr,
-          'session_start'
         );
 
         // Requête 2 : liens sortants (click ou clic_affiliation)
         let linkMap = new Map<string, number>();
         try {
-          linkMap = await fetchGa4Report(
+          linkMap = await fetchEventCount(
             site.ga4PropertyId,
             token,
             startDateStr,
             endDateStr,
-            site.linkEvent
+            site.linkEvent,
           );
         } catch {
           // Non bloquant : certains sites peuvent ne pas avoir de données de liens
@@ -173,7 +216,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       mode,
-      period: { startDate: startDateStr, endDate: endDateStr },
+      period: { startDate: mode === 'smart' ? '(par site)' : mode === 'full' ? fullStartDateStr : incrementalStartDateStr, endDate: endDateStr },
       sitesProcessed: results.length,
       totalRecords: totalInserted,
       errors: totalErrors,

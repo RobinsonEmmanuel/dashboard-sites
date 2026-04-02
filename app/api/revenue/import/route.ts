@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+// Vercel Pro : 60s max (vs 10s par défaut) — suffisant pour les gros imports bulkWrite
+export const maxDuration = 60;
 import { getDatabase } from '@/lib/mongodb';
 import { parseGygCsv, isGygCsv } from '@/lib/parsers/gyg';
 import { parseBookingCsv, isBookingCsv } from '@/lib/parsers/booking';
@@ -110,32 +113,42 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Upsert dans MongoDB — pour Booking, on remplace les enregistrements existants
-    // (permet de corriger les données mal importées sans vider la collection)
+    // Upsert en masse via bulkWrite — 1 seul round-trip réseau quel que soit le volume
     const col = db.collection('affiliation_revenue');
     let inserted = 0;
     let updated = 0;
     let duplicates = 0;
 
-    for (const record of result.records) {
-      if (partner === 'booking') {
-        // replaceOne avec upsert : corrige les dates si le fichier est ré-importé
-        const res = await col.replaceOne(
-          { orderId: record.orderId, partner: record.partner },
-          record,
-          { upsert: true },
-        );
-        if (res.upsertedCount > 0) inserted++;
-        else if (res.modifiedCount > 0) updated++;
-        else duplicates++;
-      } else {
-        const existing = await col.findOne({ orderId: record.orderId, partner: record.partner });
-        if (existing) {
-          duplicates++;
-          continue;
-        }
-        await col.insertOne(record);
-        inserted++;
+    if (partner === 'booking') {
+      // replaceOne upsert : corrige les données si le fichier est ré-importé
+      const ops = result.records.map((record) => ({
+        replaceOne: {
+          filter: { orderId: record.orderId, partner: record.partner },
+          replacement: record,
+          upsert: true,
+        },
+      }));
+      if (ops.length > 0) {
+        const bulkRes = await col.bulkWrite(ops, { ordered: false });
+        inserted  = bulkRes.upsertedCount;
+        updated   = bulkRes.modifiedCount;
+        duplicates = result.records.length - inserted - updated;
+      }
+    } else {
+      // Pour les autres partenaires : insert uniquement si l'orderId n'existe pas encore
+      const existingIds = new Set(
+        (await col.find(
+          { partner, orderId: { $in: result.records.map((r) => r.orderId) } },
+          { projection: { orderId: 1 } },
+        ).toArray()).map((d) => d.orderId as string)
+      );
+
+      const newRecords = result.records.filter((r) => !existingIds.has(r.orderId));
+      duplicates = result.records.length - newRecords.length;
+
+      if (newRecords.length > 0) {
+        await col.insertMany(newRecords, { ordered: false });
+        inserted = newRecords.length;
       }
     }
 

@@ -31,7 +31,8 @@ async function fetchGscData(
   startDate: string,
   endDate: string,
   dimensions: string[],
-  startRow = 0
+  startRow = 0,
+  rowLimit = 25000,
 ): Promise<GscRow[]> {
   const apiUrl = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
 
@@ -45,7 +46,7 @@ async function fetchGscData(
       startDate,
       endDate,
       dimensions,
-      rowLimit: 25000,
+      rowLimit,
       startRow,
       searchType: 'web',
     }),
@@ -67,20 +68,20 @@ async function fetchGscData(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const mode: 'incremental' | 'full' = body.mode ?? 'incremental';
+    const mode: 'incremental' | 'full' | 'smart' = body.mode ?? 'smart';
 
     const endDate = new Date();
     // GSC a un lag de 2-3 jours — on utilise J-2 comme date de fin
     endDate.setDate(endDate.getDate() - 2);
-    const startDate = new Date(endDate);
-    if (mode === 'full') {
-      startDate.setDate(endDate.getDate() - 738); // ~740 jours total
-    } else {
-      startDate.setDate(endDate.getDate() - 5);
-    }
-
-    const startDateStr = formatDate(startDate);
     const endDateStr = formatDate(endDate);
+
+    const fullStartDate = new Date(endDate);
+    fullStartDate.setDate(endDate.getDate() - 738);
+    const fullStartDateStr = formatDate(fullStartDate);
+
+    const incrementalStartDate = new Date(endDate);
+    incrementalStartDate.setDate(endDate.getDate() - 5);
+    const incrementalStartDateStr = formatDate(incrementalStartDate);
 
     const db = await getDatabase();
     const sites = await db.collection<Site>('sites').find({ active: true }).toArray();
@@ -89,12 +90,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Aucun site actif trouvé' }, { status: 404 });
     }
 
+    // Mode smart : récupérer la dernière date ingérée par site (gsc_daily)
+    const lastDateBySite = new Map<string, string>();
+    if (mode === 'smart') {
+      const lastDates = await db.collection('gsc_daily').aggregate([
+        { $group: { _id: '$siteId', lastDate: { $max: '$dateStr' } } },
+      ]).toArray();
+      for (const r of lastDates) {
+        if (r._id && r.lastDate) lastDateBySite.set(r._id as string, r.lastDate as string);
+      }
+    }
+
     const token = await getGoogleAccessToken(GSC_SCOPES);
-    const results: { site: string; dailyRecords: number; pageRecords: number; queryRecords: number; errors: string[] }[] = [];
+    const results: { site: string; dailyRecords: number; pageRecords: number; queryRecords: number; startDate: string; errors: string[] }[] = [];
 
     for (const site of sites) {
-      const siteResult = { site: site.name, dailyRecords: 0, pageRecords: 0, queryRecords: 0, errors: [] as string[] };
+      const siteResult = { site: site.name, dailyRecords: 0, pageRecords: 0, queryRecords: 0, startDate: '', errors: [] as string[] };
       const gscSiteUrl = buildSiteUrl(site);
+
+      // Calculer la date de début pour ce site
+      let startDateStr: string;
+      let startDate: Date;
+      if (mode === 'full') {
+        startDateStr = fullStartDateStr;
+        startDate = fullStartDate;
+      } else if (mode === 'smart') {
+        const lastDate = lastDateBySite.get(site._id!.toString());
+        if (lastDate) {
+          const d = new Date(lastDate + 'T00:00:00Z');
+          d.setUTCDate(d.getUTCDate() - 3); // overlap de 3 jours (lag GSC)
+          startDateStr = formatDate(d);
+          startDate = d;
+        } else {
+          startDateStr = fullStartDateStr;
+          startDate = fullStartDate;
+        }
+      } else {
+        startDateStr = incrementalStartDateStr;
+        startDate = incrementalStartDate;
+      }
+      siteResult.startDate = startDateStr;
 
       try {
         // ── 1. Données journalières ───────────────────────────────────────
@@ -129,64 +164,73 @@ export async function POST(request: NextRequest) {
           siteResult.dailyRecords = dailyOps.length;
         }
 
-        // ── 2. Données par page ───────────────────────────────────────────
-        const pageRows = await fetchGscData(gscSiteUrl, token, startDateStr, endDateStr, ['page']);
-        const pageCollection = db.collection<GscPage>('gsc_pages');
-        const periodStart = startDate;
-        const periodEnd = endDate;
-        const pageOps = pageRows.map((row) => ({
-          updateOne: {
-            filter: { siteId: site._id!.toString(), page: row.keys[0] },
-            update: {
-              $set: {
-                siteId: site._id!.toString(),
-                siteName: site.name,
-                shortName: site.shortName,
-                page: row.keys[0],
-                clicks: row.clicks,
-                impressions: row.impressions,
-                ctr: row.ctr,
-                position: row.position,
-                periodStart,
-                periodEnd,
-                updatedAt: new Date(),
-              },
-            },
-            upsert: true,
-          },
-        }));
-        if (pageOps.length > 0) {
-          await pageCollection.bulkWrite(pageOps);
-          siteResult.pageRecords = pageOps.length;
-        }
+        // ── 2 & 3. Pages et requêtes — uniquement en mode full ────────────
+        // En smart/incremental : skip (data quasi-statique, inutile chaque nuit)
+        // En full : top 200 pages + top 500 requêtes sur 30 derniers jours
+        if (mode === 'full') {
+          const pqEnd = endDate;
+          const pqStart = new Date(endDate);
+          pqStart.setDate(pqEnd.getDate() - 30);
+          const pqStartStr = formatDate(pqStart);
+          const pqEndStr = formatDate(pqEnd);
 
-        // ── 3. Top requêtes ───────────────────────────────────────────────
-        const queryRows = await fetchGscData(gscSiteUrl, token, startDateStr, endDateStr, ['query']);
-        const queryCollection = db.collection<GscQuery>('gsc_queries');
-        const queryOps = queryRows.map((row) => ({
-          updateOne: {
-            filter: { siteId: site._id!.toString(), query: row.keys[0] },
-            update: {
-              $set: {
-                siteId: site._id!.toString(),
-                siteName: site.name,
-                shortName: site.shortName,
-                query: row.keys[0],
-                clicks: row.clicks,
-                impressions: row.impressions,
-                ctr: row.ctr,
-                position: row.position,
-                periodStart,
-                periodEnd,
-                updatedAt: new Date(),
+          // Top 200 pages
+          const pageRows = await fetchGscData(gscSiteUrl, token, pqStartStr, pqEndStr, ['page'], 0, 200);
+          const pageCollection = db.collection<GscPage>('gsc_pages');
+          if (pageRows.length > 0) {
+            const pageOps = pageRows.map((row) => ({
+              updateOne: {
+                filter: { siteId: site._id!.toString(), page: row.keys[0] },
+                update: {
+                  $set: {
+                    siteId: site._id!.toString(),
+                    siteName: site.name,
+                    shortName: site.shortName,
+                    page: row.keys[0],
+                    clicks: row.clicks,
+                    impressions: row.impressions,
+                    ctr: row.ctr,
+                    position: row.position,
+                    periodStart: pqStart,
+                    periodEnd: pqEnd,
+                    updatedAt: new Date(),
+                  },
+                },
+                upsert: true,
               },
-            },
-            upsert: true,
-          },
-        }));
-        if (queryOps.length > 0) {
-          await queryCollection.bulkWrite(queryOps);
-          siteResult.queryRecords = queryOps.length;
+            }));
+            await pageCollection.bulkWrite(pageOps, { ordered: false });
+            siteResult.pageRecords = pageOps.length;
+          }
+
+          // Top 500 requêtes
+          const queryRows = await fetchGscData(gscSiteUrl, token, pqStartStr, pqEndStr, ['query'], 0, 500);
+          const queryCollection = db.collection<GscQuery>('gsc_queries');
+          if (queryRows.length > 0) {
+            const queryOps = queryRows.map((row) => ({
+              updateOne: {
+                filter: { siteId: site._id!.toString(), query: row.keys[0] },
+                update: {
+                  $set: {
+                    siteId: site._id!.toString(),
+                    siteName: site.name,
+                    shortName: site.shortName,
+                    query: row.keys[0],
+                    clicks: row.clicks,
+                    impressions: row.impressions,
+                    ctr: row.ctr,
+                    position: row.position,
+                    periodStart: pqStart,
+                    periodEnd: pqEnd,
+                    updatedAt: new Date(),
+                  },
+                },
+                upsert: true,
+              },
+            }));
+            await queryCollection.bulkWrite(queryOps, { ordered: false });
+            siteResult.queryRecords = queryOps.length;
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -204,7 +248,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       mode,
-      period: { startDate: startDateStr, endDate: endDateStr },
+      period: { startDate: mode === 'smart' ? '(par site)' : mode === 'full' ? fullStartDateStr : incrementalStartDateStr, endDate: endDateStr },
       sitesProcessed: results.length,
       totalDaily,
       totalPages,

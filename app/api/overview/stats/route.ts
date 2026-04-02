@@ -1,24 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/mongodb';
+import { resolvePreset, shiftYearBack } from '@/lib/period-utils';
+import type { PeriodPreset } from '@/lib/period-utils';
 
 function shiftDate(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().split('T')[0];
-}
-
-function getPeriodDates(period: string): { start: string; end: string } {
-  const end = new Date();
-  end.setUTCDate(end.getUTCDate() - 1); // hier
-  const start = new Date(end);
-
-  const days = period === '7d' ? 7 : period === '30d' ? 30 : period === '90d' ? 90 : 365;
-  start.setUTCDate(end.getUTCDate() - days + 1);
-
-  return {
-    start: start.toISOString().split('T')[0],
-    end: end.toISOString().split('T')[0],
-  };
 }
 
 interface KpiSnapshot {
@@ -78,26 +66,27 @@ async function fetchKpis(
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const period = searchParams.get('period') ?? '30d';
     const siteId = searchParams.get('siteId') ?? undefined;
 
-    const { start, end } = getPeriodDates(period);
-    const days = (new Date(end).getTime() - new Date(start).getTime()) / 86400000 + 1;
+    // Accepte soit preset+custom, soit start+end directs
+    const preset = (searchParams.get('preset') ?? 'current-month') as PeriodPreset;
+    const customStart = searchParams.get('start') ?? undefined;
+    const customEnd   = searchParams.get('end')   ?? undefined;
+    const { start, end } = resolvePreset(preset, customStart, customEnd);
 
-    const startN1 = shiftDate(start, -365);
-    const endN1 = shiftDate(end, -365);
-    const startN2 = shiftDate(start, -730);
-    const endN2 = shiftDate(end, -730);
+    const days = (new Date(end).getTime() - new Date(start).getTime()) / 86400000 + 1;
+    const { n1Start, n1End }   = shiftYearBack(start, end);
+    const { n1Start: n2Start, n1End: n2End } = shiftYearBack(n1Start, n1End);
 
     const db = await getDatabase();
     const [current, n1, n2] = await Promise.all([
       fetchKpis(db, start, end, siteId),
-      fetchKpis(db, startN1, endN1, siteId),
-      fetchKpis(db, startN2, endN2, siteId),
+      fetchKpis(db, n1Start, n1End, siteId),
+      fetchKpis(db, n2Start, n2End, siteId),
     ]);
 
     return NextResponse.json({
-      period,
+      preset,
       days,
       range: { start, end },
       current,

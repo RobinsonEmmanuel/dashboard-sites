@@ -40,7 +40,8 @@ export async function PUT(request: NextRequest, { params }: Params) {
       {
         $set: {
           name, shortName, ga4PropertyId, gscSiteUrl, gscType, linkEvent,
-          active: active ?? true,
+          // Activation automatique si GA4 Property ID renseigné, sinon respecte la valeur explicite
+          active: active !== undefined ? active : ga4PropertyId?.trim().length > 0,
           ...(bookingAffiliateId !== undefined ? { bookingAffiliateId } : {}),
           ...(discoverCarsChan   !== undefined ? { discoverCarsChan }   : {}),
           ...(gygCampaign        !== undefined ? { gygCampaign }        : {}),

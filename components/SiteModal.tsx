@@ -47,7 +47,14 @@ export default function SiteModal({ site, onClose, onSaved }: Props) {
   const [error, setError] = useState('');
 
   const set = (field: keyof typeof form, value: string | boolean) =>
-    setForm((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => {
+      const next = { ...prev, [field]: value };
+      // Active automatiquement le site dès qu'un GA4 Property ID est renseigné
+      if (field === 'ga4PropertyId') {
+        next.active = String(value).trim().length > 0;
+      }
+      return next;
+    });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
