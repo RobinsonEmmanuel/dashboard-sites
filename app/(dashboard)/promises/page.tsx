@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ArrowPathIcon,
   CalendarDaysIcon,
@@ -129,6 +129,50 @@ export default function PromisesPage() {
   const [promisesBySite, setPromisesBySite] = useState<PromisesBySiteData | null>(null);
   const [loadingPromisesBySite, setLoadingPromisesBySite] = useState(false);
 
+  /** Incrémenté à chaque chargement : évite qu’une réponse lente écrase l’affichage après changement de période. */
+  const promisesPanelsFetchGen = useRef(0);
+
+  const refreshPromisesPanels = useCallback(async () => {
+    const gen = ++promisesPanelsFetchGen.current;
+    const qs = buildPeriodParams(period);
+    if (siteFilter) qs.set('site', siteFilter);
+    qs.set('today', todayLocalStr);
+
+    setLoadingPromises(true);
+    setLoadingPromisesEvolution(true);
+    setLoadingPromisesBySite(true);
+
+    try {
+      const [resP, resE, resB] = await Promise.all([
+        fetch(`/api/revenue/promises?${qs}`),
+        fetch(`/api/revenue/promises/chart?${qs}`),
+        fetch(`/api/revenue/promises/by-site?${qs}`),
+      ]);
+      if (gen !== promisesPanelsFetchGen.current) return;
+
+      const [dataP, dataE, dataB] = await Promise.all([resP.json(), resE.json(), resB.json()]);
+      if (gen !== promisesPanelsFetchGen.current) return;
+
+      if (!resP.ok) throw new Error(dataP.error || 'Erreur promesses');
+      if (!resE.ok) throw new Error(dataE.error || 'Erreur graphique');
+      if (!resB.ok) throw new Error(dataB.error || 'Erreur par site');
+
+      setPromises(dataP);
+      setPromisesEvolution(dataE);
+      setPromisesBySite(dataB);
+    } catch (e) {
+      if (gen === promisesPanelsFetchGen.current) {
+        console.error(e);
+      }
+    } finally {
+      if (gen === promisesPanelsFetchGen.current) {
+        setLoadingPromises(false);
+        setLoadingPromisesEvolution(false);
+        setLoadingPromisesBySite(false);
+      }
+    }
+  }, [period, siteFilter, todayLocalStr]);
+
   // --- Insights modal (12 mois vs N-1 + répartition promesses + non attribués) ---
   type Insights12mPoint = { month: string; total: number; totalN1: number };
   const [showInsightsModal, setShowInsightsModal] = useState(false);
@@ -150,67 +194,13 @@ export default function PromisesPage() {
     setSites(Array.isArray(d) ? d : []);
   }, []);
 
-  const loadPromises = useCallback(async () => {
-    setLoadingPromises(true);
-    try {
-      const qs = buildPeriodParams(period);
-      if (siteFilter) qs.set('site', siteFilter);
-      qs.set('today', todayLocalStr);
-
-      const res = await fetch(`/api/revenue/promises?${qs}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur');
-      setPromises(data);
-    } finally {
-      setLoadingPromises(false);
-    }
-  }, [period, siteFilter, todayLocalStr]);
-
-  const loadPromisesEvolution = useCallback(async () => {
-    setLoadingPromisesEvolution(true);
-    try {
-      const qs = buildPeriodParams(period);
-      if (siteFilter) qs.set('site', siteFilter);
-      qs.set('today', todayLocalStr);
-      const res = await fetch(`/api/revenue/promises/chart?${qs}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur');
-      setPromisesEvolution(data);
-    } finally {
-      setLoadingPromisesEvolution(false);
-    }
-  }, [period, siteFilter, todayLocalStr]);
-
-  const loadPromisesBySite = useCallback(async () => {
-    setLoadingPromisesBySite(true);
-    try {
-      const qs = buildPeriodParams(period);
-      if (siteFilter) qs.set('site', siteFilter);
-      qs.set('today', todayLocalStr);
-      const res = await fetch(`/api/revenue/promises/by-site?${qs}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur');
-      setPromisesBySite(data);
-    } finally {
-      setLoadingPromisesBySite(false);
-    }
-  }, [period, siteFilter, todayLocalStr]);
+  useEffect(() => {
+    void refreshPromisesPanels();
+  }, [refreshPromisesPanels]);
 
   useEffect(() => {
     loadSites();
   }, [loadSites]);
-
-  useEffect(() => {
-    loadPromises();
-  }, [loadPromises]);
-
-  useEffect(() => {
-    loadPromisesEvolution();
-  }, [loadPromisesEvolution]);
-
-  useEffect(() => {
-    loadPromisesBySite();
-  }, [loadPromisesBySite]);
 
   const xAxisFormatter = (v: string) => {
     if (v.length === 10) return v.slice(8, 10) + '/' + v.slice(5, 7); // DD/MM
@@ -336,8 +326,7 @@ export default function PromisesPage() {
       if (!res.ok) throw new Error(data.error || 'Erreur affectation');
 
       setInsightsAssignMsg(`Affectation OK (${data.updatedCount ?? 0} enregistrements).`);
-      await loadPromisesBySite();
-      await loadPromises();
+      await refreshPromisesPanels();
       await loadNonAttributed(true);
       await loadInsights12m();
     } catch (e) {
@@ -345,7 +334,7 @@ export default function PromisesPage() {
     } finally {
       setAssigningGroupId((prev) => ({ ...prev, [gid]: false }));
     }
-  }, [assignSiteByGroupId, period, todayLocalStr, loadPromisesBySite, loadPromises, loadNonAttributed, loadInsights12m]);
+  }, [assignSiteByGroupId, period, todayLocalStr, refreshPromisesPanels, loadNonAttributed, loadInsights12m]);
 
   const autoAssignNonAttributed = useCallback(async () => {
     setAutoAssigning(true);
@@ -367,8 +356,7 @@ export default function PromisesPage() {
       if (!res.ok) throw new Error(data.error || 'Erreur auto-assign');
 
       setAutoAssignMsg(`Réaffectation OK : ${data.updated ?? 0} affecté(s).`);
-      await loadPromisesBySite();
-      await loadPromises();
+      await refreshPromisesPanels();
       await loadNonAttributed(true);
       await loadInsights12m();
     } catch (e) {
@@ -376,7 +364,7 @@ export default function PromisesPage() {
     } finally {
       setAutoAssigning(false);
     }
-  }, [period, todayLocalStr, loadPromisesBySite, loadPromises, loadNonAttributed, loadInsights12m]);
+  }, [period, todayLocalStr, refreshPromisesPanels, loadNonAttributed, loadInsights12m]);
 
   return (
     <div className="p-6 max-w-screen-xl mx-auto space-y-6">
@@ -404,11 +392,7 @@ export default function PromisesPage() {
           </select>
 
           <button
-            onClick={() => {
-              loadPromises();
-              loadPromisesEvolution();
-              loadPromisesBySite();
-            }}
+            onClick={() => void refreshPromisesPanels()}
             disabled={loadingPromises || loadingPromisesEvolution || loadingPromisesBySite}
             title="Actualiser"
             className="p-2 text-gray-500 hover:text-[#f57503] hover:bg-orange-50 rounded-lg transition-colors disabled:opacity-40"
