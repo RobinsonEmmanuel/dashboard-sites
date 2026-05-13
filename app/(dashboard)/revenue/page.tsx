@@ -22,6 +22,7 @@ import {
   getRecentMonths,
   getAvailableYears,
 } from '@/lib/period-utils';
+import { postRevenueImport } from '@/lib/ingest-poll';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ interface Stats {
 interface ImportResult {
   partner: AffiliationPartner;
   inserted: number;
+  updated?: number;
   duplicates: number;
   skipped: number;
   cancelled?: number;
@@ -543,15 +545,13 @@ export default function RevenuePage() {
     if (!file) return;
     setImporting(true); setImportError(''); setImportResult(null);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      if (partnerOverride) fd.append('partner', partnerOverride);
-      const res  = await fetch('/api/revenue/import', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok) setImportError(data.error || 'Erreur lors de l\'import');
-      else { setImportResult(data); loadStats(); loadChart(); }
-    } catch { setImportError('Erreur réseau'); }
-    finally { setImporting(false); }
+      const data = await postRevenueImport(file, partnerOverride || undefined);
+      setImportResult(data as unknown as ImportResult);
+      await loadStats();
+      await loadChart();
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : 'Erreur lors de l\'import');
+    } finally { setImporting(false); }
   };
 
   const exportCsv = () => {

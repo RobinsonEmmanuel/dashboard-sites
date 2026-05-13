@@ -3,6 +3,7 @@ import { bullmqPrefix, getBullmqConnection } from './redis-for-bullmq';
 import { INGEST_QUEUE_NAME } from './ingest-queue-name';
 import type { Ga4IngestInput } from './run-ga4-ingest';
 import type { GscIngestInput } from './run-gsc-ingest';
+import type { RevenueImportInput } from './run-revenue-import';
 
 export { INGEST_QUEUE_NAME };
 
@@ -34,6 +35,16 @@ export async function enqueueGa4Ingest(data: Ga4IngestInput) {
 export async function enqueueGscIngest(data: GscIngestInput) {
   const queue = getIngestQueue();
   return queue.add('gsc', data, { jobId: `gsc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` });
+}
+
+/** Limite prudente pour le corps du job (Redis / Upstash). */
+export const REVENUE_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+
+export async function enqueueRevenueImport(data: RevenueImportInput) {
+  const queue = getIngestQueue();
+  return queue.add('revenue-import', data, {
+    jobId: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  });
 }
 
 export async function getIngestJobState(jobId: string) {

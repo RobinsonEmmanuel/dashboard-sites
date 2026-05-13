@@ -9,6 +9,7 @@ import {
   DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import type { AffiliationPartner } from '@/lib/models/revenue';
+import { postRevenueImport } from '@/lib/ingest-poll';
 
 const PARTNERS: { id: AffiliationPartner; label: string; color: string }[] = [
   { id: 'getyourguide', label: 'GetYourGuide', color: '#FF5533' },
@@ -29,6 +30,7 @@ function fmtEur(n: number) {
 interface ImportResult {
   partner: AffiliationPartner;
   inserted: number;
+  updated?: number;
   duplicates: number;
   skipped: number;
   cancelled?: number;
@@ -106,22 +108,11 @@ export default function RevenueCsvImport({
     setImportResult(null);
 
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      if (partnerOverride) fd.append('partner', partnerOverride);
-
-      const res = await fetch('/api/revenue/import', { method: 'POST', body: fd });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setImportError(data.error || 'Erreur lors de l\'import');
-        return;
-      }
-
-      setImportResult(data as ImportResult);
-      onImportSuccess?.(data as ImportResult);
-    } catch {
-      setImportError('Erreur réseau');
+      const data = await postRevenueImport(file, partnerOverride || undefined);
+      setImportResult(data as unknown as ImportResult);
+      onImportSuccess?.(data as unknown as ImportResult);
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : 'Erreur réseau');
     } finally {
       setImporting(false);
     }
