@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
     const cancelRows = await col.aggregate([
       ...makeMatchPipeline(startStr, endStr),
       { $match: cancelFilter },
-      { $group: { _id: '$partner', count: { $sum: 1 }, lostRevenue: { $sum: '$commissionMin' } } },
+      { $group: { _id: '$partner', count: { $sum: 1 }, lostRevenue: { $sum: { $ifNull: ['$commissionMin', '$commissionActual'] } } } },
     ]).toArray();
 
     // ── Total (annulés + non-annulés) ─────────────────────────────────────────

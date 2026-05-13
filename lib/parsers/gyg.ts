@@ -12,7 +12,7 @@ export interface ParseResult {
 /**
  * GetYourGuide CSV parser
  * Colonnes clés : Booking date, Potential income, Campaign, Status
- * Filtre : exclure les lignes avec Status = "Canceled"
+ * Les lignes annulées sont importées (volume / taux d’annulation), comme pour les autres sources.
  */
 export function parseGygCsv(text: string, siteMap?: Record<string, string>): ParseResult {
   const rows = parseCsv(text);
@@ -34,10 +34,8 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
     };
 
     const status = get('status');
-    if (status.toLowerCase() === 'canceled' || status.toLowerCase() === 'cancelled') {
-      skipped++;
-      continue;
-    }
+    const statusLower = status.toLowerCase();
+    const isCanceled = statusLower === 'canceled' || statusLower === 'cancelled';
 
     const dateRaw = get('booking date');
     const dateStr = normalizeDate(dateRaw);
@@ -51,7 +49,7 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
     const siteName = (siteMap ?? GYG_CAMPAIGN_MAP)[campaign] ?? undefined;
 
     const income = parseAmount(get('potential income'));
-    if (income <= 0) {
+    if (!isCanceled && income <= 0) {
       skipped++;
       continue;
     }
@@ -61,16 +59,13 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
     const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
     const reservationCountry = (getExact('Country') || get('country') || get('booking country') || '').trim() || undefined;
 
-    const orderId =
-      rawOrderId ||
-      stableFallbackOrderId('gyg-fp-', [
-        dateStr,
-        campaign,
-        String(income),
-        activity,
-        reservationCity ?? '',
-        reservationCountry ?? '',
-      ]);
+    const commissionActual = Math.max(0, income);
+
+    const fingerprintParts = isCanceled
+      ? [dateStr, campaign, String(commissionActual), activity, reservationCity ?? '', reservationCountry ?? '', statusLower]
+      : [dateStr, campaign, String(commissionActual), activity, reservationCity ?? '', reservationCountry ?? ''];
+
+    const orderId = rawOrderId || stableFallbackOrderId('gyg-fp-', fingerprintParts);
 
     records.push({
       partner: 'getyourguide',
@@ -79,7 +74,7 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
       orderId,
       affiliateId: campaign || undefined,
       productName: activity || undefined,
-      commissionActual: income,
+      commissionActual,
       siteName,
       reservationCity,
       reservationCountry,

@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
     // Annulés par partenaire (count + montant potentiel perdu)
     const cancelledByPartner = await col.aggregate([
       { $match: cancelledMatchBase },
-      { $group: { _id: '$partner', count: { $sum: 1 }, lostRevenue: { $sum: '$commissionMin' } } },
+      { $group: { _id: '$partner', count: { $sum: 1 }, lostRevenue: { $sum: { $ifNull: ['$commissionMin', '$commissionActual'] } } } },
     ]).toArray();
 
     // Total bookings (annulés + non-annulés) par partenaire pour taux d'annulation
