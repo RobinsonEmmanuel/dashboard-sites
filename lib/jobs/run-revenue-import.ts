@@ -133,48 +133,31 @@ export async function runRevenueCsvImport(input: RevenueImportInput): Promise<Re
   const col = db.collection('affiliation_revenue');
   let inserted = 0;
   let updated = 0;
-  let duplicates = 0;
 
-  if (partner === 'booking') {
-    const ops = result.records.map((record) => ({
-      replaceOne: {
-        filter: { orderId: record.orderId, partner: record.partner },
-        replacement: record,
-        upsert: true,
-      },
-    }));
-    if (ops.length > 0) {
-      const CHUNK = 800;
-      let upserted = 0;
-      let modified = 0;
-      for (let i = 0; i < ops.length; i += CHUNK) {
-        const slice = ops.slice(i, i + CHUNK);
-        const bulkRes = await col.bulkWrite(slice, { ordered: false });
-        upserted += bulkRes.upsertedCount;
-        modified += bulkRes.modifiedCount;
-      }
-      inserted = upserted;
-      updated = modified;
-      duplicates = result.records.length - inserted - updated;
-    }
-  } else {
-    const existingIds = new Set(
-      (await col
-        .find(
-          { partner, orderId: { $in: result.records.map((r) => r.orderId) } },
-          { projection: { orderId: 1 } },
-        )
-        .toArray()).map((d) => d.orderId as string),
-    );
+  const ops = result.records.map((record) => ({
+    replaceOne: {
+      filter: { orderId: record.orderId, partner: record.partner },
+      replacement: record,
+      upsert: true,
+    },
+  }));
 
-    const newRecords = result.records.filter((r) => !existingIds.has(r.orderId));
-    duplicates = result.records.length - newRecords.length;
-
-    if (newRecords.length > 0) {
-      await col.insertMany(newRecords, { ordered: false });
-      inserted = newRecords.length;
+  if (ops.length > 0) {
+    const CHUNK = 800;
+    for (let i = 0; i < ops.length; i += CHUNK) {
+      const slice = ops.slice(i, i + CHUNK);
+      const bulkRes = await col.bulkWrite(slice, { ordered: false });
+      inserted += bulkRes.upsertedCount;
+      updated += bulkRes.modifiedCount;
     }
   }
+
+  const idCounts = new Map<string, number>();
+  for (const r of result.records) {
+    const k = `${r.partner}\t${r.orderId}`;
+    idCounts.set(k, (idCounts.get(k) ?? 0) + 1);
+  }
+  const duplicates = [...idCounts.values()].reduce((sum, n) => sum + Math.max(0, n - 1), 0);
 
   const totalCommission = result.records.reduce((sum, r) => sum + r.commissionActual, 0);
   const totalNonCancelled = result.records
@@ -207,7 +190,7 @@ export async function runRevenueCsvImport(input: RevenueImportInput): Promise<Re
       detectedColumns: result.detectedColumns ?? headers,
       ...(bookingDateFormat ? { bookingDateFormat } : {}),
       ...(recalculate ? { recalculate } : {}),
-      message: `${inserted} enregistrements importés, ${updated} mis à jour (${duplicates} doublons ignorés, ${cancelled} annulés)${recalculate ? ` — ${recalculate.recordsUpdated} tiers recalculés` : ''}`,
+      message: `${inserted} enregistrements créés, ${updated} mis à jour (${duplicates} lignes en double dans le fichier, ${cancelled} annulés)${recalculate ? ` — ${recalculate.recordsUpdated} tiers recalculés` : ''}`,
     },
   };
 }

@@ -1,6 +1,7 @@
 import type { AffiliationRevenue } from '../models/revenue';
 import { TIQETS_CAMPAIGN_MAP } from '../mappings/tiqets-campaigns';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
+import { stableFallbackOrderId } from './stable-import-id';
 
 export interface ParseResult {
   records: Omit<AffiliationRevenue, '_id'>[];
@@ -55,17 +56,28 @@ export function parseTiqetsCsv(text: string, siteMap?: Record<string, string>): 
     const campaign = (get('campaign') || get('tq_campaign') || '').trim();
     const siteName = (siteMap ?? TIQETS_CAMPAIGN_MAP)[campaign] ?? undefined;
 
-    const orderId = get('order id') || get('booking id') || get('id') || `tq-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
-
+    const productLabel = (get('product name') || get('product') || '').trim();
+    const rawOrderId = (get('order id') || get('booking id') || get('id') || '').trim();
     const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
     const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
+    const orderId =
+      rawOrderId ||
+      stableFallbackOrderId('tq-fp-', [
+        dateStr,
+        campaign,
+        String(commission),
+        productLabel,
+        reservationCity ?? '',
+        reservationCountry ?? '',
+      ]);
 
     records.push({
       partner: 'tiqets',
       date: new Date(dateStr),
       dateStr,
       orderId,
-      productName: get('product name') || get('product') || undefined,
+      productName: productLabel || undefined,
       // On stocke aussi la clé brute (campaign) pour pouvoir analyser/mapper les "non attribués"
       affiliateId: campaign || undefined,
       commissionActual: commission,

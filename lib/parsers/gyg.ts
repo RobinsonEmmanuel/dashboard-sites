@@ -1,6 +1,7 @@
 import type { AffiliationRevenue } from '../models/revenue';
 import { GYG_CAMPAIGN_MAP } from '../mappings/gyg-campaigns';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
+import { stableFallbackOrderId } from './stable-import-id';
 
 export interface ParseResult {
   records: Omit<AffiliationRevenue, '_id'>[];
@@ -55,10 +56,21 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
       continue;
     }
 
-    const orderId = get('booking id') || get('order id') || `gyg-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
-
+    const activity = (get('activity') || get('product') || '').trim();
+    const rawOrderId = (get('booking id') || get('order id') || '').trim();
     const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
     const reservationCountry = (getExact('Country') || get('country') || get('booking country') || '').trim() || undefined;
+
+    const orderId =
+      rawOrderId ||
+      stableFallbackOrderId('gyg-fp-', [
+        dateStr,
+        campaign,
+        String(income),
+        activity,
+        reservationCity ?? '',
+        reservationCountry ?? '',
+      ]);
 
     records.push({
       partner: 'getyourguide',
@@ -66,7 +78,7 @@ export function parseGygCsv(text: string, siteMap?: Record<string, string>): Par
       dateStr,
       orderId,
       affiliateId: campaign || undefined,
-      productName: get('activity') || get('product') || undefined,
+      productName: activity || undefined,
       commissionActual: income,
       siteName,
       reservationCity,

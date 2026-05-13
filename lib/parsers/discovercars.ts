@@ -1,6 +1,7 @@
 import type { AffiliationRevenue } from '../models/revenue';
 import { DISCOVERCARS_CHANNEL_MAP } from '../mappings/discovercars-channels';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
+import { stableFallbackOrderId } from './stable-import-id';
 
 export interface ParseResult {
   records: Omit<AffiliationRevenue, '_id'>[];
@@ -54,10 +55,21 @@ export function parseDiscoverCarsCsv(text: string, siteMap?: Record<string, stri
     const channel = (get('channel name') || get('channel') || '').trim();
     const siteName = (siteMap ?? DISCOVERCARS_CHANNEL_MAP)[channel] ?? undefined;
 
-    const orderId = get('booking id') || get('order id') || get('id') || `dc-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
-
+    const carLabel = (get('car model') || get('product') || '').trim();
+    const rawOrderId = (get('booking id') || get('order id') || get('id') || '').trim();
     const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
     const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
+
+    const orderId =
+      rawOrderId ||
+      stableFallbackOrderId('dc-fp-', [
+        dateStr,
+        channel,
+        String(commission),
+        carLabel,
+        reservationCity ?? '',
+        reservationCountry ?? '',
+      ]);
 
     records.push({
       partner: 'discovercars',
@@ -65,7 +77,7 @@ export function parseDiscoverCarsCsv(text: string, siteMap?: Record<string, stri
       dateStr,
       orderId,
       affiliateId: channel || undefined,
-      productName: get('car model') || get('product') || undefined,
+      productName: carLabel || undefined,
       commissionActual: commission,
       siteName,
       reservationCity,

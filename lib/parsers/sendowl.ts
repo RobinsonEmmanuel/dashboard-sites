@@ -1,5 +1,6 @@
 import type { AffiliationRevenue } from '../models/revenue';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
+import { stableFallbackOrderId } from './stable-import-id';
 
 export interface ParseResult {
   records: Omit<AffiliationRevenue, '_id'>[];
@@ -84,7 +85,10 @@ export function parseSendowlCsv(
       }
     }
 
-    const orderId = get('sendowlorderid') || get('orderid') || `so-${dateStr}-${Math.random().toString(36).slice(2, 8)}`;
+    const rawOrderId = (get('sendowlorderid') || get('orderid') || '').trim();
+    const orderId =
+      rawOrderId ||
+      stableFallbackOrderId('so-fp-', [dateStr, rawItemName, String(amount), state, String(isCancelled)]);
 
     const reservationCity = (getExact('City') || get('city') || '').trim() || undefined;
     const reservationCountry = (getExact('Country') || get('country') || '').trim() || undefined;
