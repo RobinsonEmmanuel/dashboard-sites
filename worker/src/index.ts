@@ -33,8 +33,10 @@ const worker = new Worker(
         text: raw.text ?? '',
         partner: raw.partner ?? undefined,
       });
-      if (!r.ok) return { _status: r.status, ...r.body };
-      return r.body;
+      if (!r.ok) {
+        return JSON.parse(JSON.stringify({ _status: r.status, ...r.body })) as Record<string, unknown>;
+      }
+      return JSON.parse(JSON.stringify(r.body)) as Record<string, unknown>;
     }
     throw new Error(`Type de job inconnu : ${job.name}`);
   },

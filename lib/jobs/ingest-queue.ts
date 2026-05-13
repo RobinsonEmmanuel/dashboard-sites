@@ -47,16 +47,46 @@ export async function enqueueRevenueImport(data: RevenueImportInput) {
   });
 }
 
+function normalizeReturnValueForApi(rv: unknown): Record<string, unknown> | undefined {
+  if (rv == null) return undefined;
+  if (typeof rv === 'string') {
+    try {
+      const parsed = JSON.parse(rv) as unknown;
+      if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof rv === 'object' && !Array.isArray(rv)) {
+    return rv as Record<string, unknown>;
+  }
+  return undefined;
+}
+
 export async function getIngestJobState(jobId: string) {
   const queue = getIngestQueue();
-  const job = await queue.getJob(jobId);
+  let job = await queue.getJob(jobId);
   if (!job) return null;
-  const state = await job.getState();
+  let state = await job.getState();
+  let rv = normalizeReturnValueForApi(job.returnvalue as unknown);
+
+  /* Course rare : l’état « completed » apparaît avant returnvalue dans le hash Redis. */
+  if (state === 'completed' && rv == null) {
+    await new Promise((r) => setTimeout(r, 150));
+    job = await queue.getJob(jobId);
+    if (!job) return null;
+    state = await job.getState();
+    rv = normalizeReturnValueForApi(job.returnvalue as unknown);
+  }
+
   return {
     id: job.id,
     name: job.name,
     state,
-    returnvalue: job.returnvalue,
+    returnvalue: rv,
     failedReason: job.failedReason,
     progress: job.progress,
     timestamp: job.timestamp,

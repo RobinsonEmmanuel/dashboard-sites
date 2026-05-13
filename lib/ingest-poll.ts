@@ -15,6 +15,23 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function coerceCompletedReturnValue(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    try {
+      const v = JSON.parse(raw) as unknown;
+      if (v != null && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return null;
+}
+
 /** Poll générique pour la file `dashboard-ingest`. */
 export async function waitForQueueJob(
   jobId: string,
@@ -23,6 +40,9 @@ export async function waitForQueueJob(
   const interval = opts?.intervalMs ?? 2000;
   const timeout = opts?.timeoutMs ?? 20 * 60 * 1000;
   const deadline = Date.now() + timeout;
+  /** completed vu sans returnvalue (course Redis / BullMQ) */
+  let completedMissingReturn = 0;
+  const maxCompletedMissingReturn = 45;
 
   try {
     while (Date.now() < deadline) {
@@ -30,7 +50,7 @@ export async function waitForQueueJob(
       const data = (await parseResponseJson(res)) as {
         error?: string;
         state?: string;
-        returnvalue?: Record<string, unknown>;
+        returnvalue?: unknown;
         failedReason?: string;
       };
 
@@ -42,11 +62,20 @@ export async function waitForQueueJob(
         continue;
       }
       if (data.state === 'completed') {
-        if (data.returnvalue && typeof data.returnvalue === 'object') {
-          return data.returnvalue as Record<string, unknown>;
+        const out = coerceCompletedReturnValue(data.returnvalue);
+        if (out) {
+          return out;
         }
-        throw new Error('Job terminé sans résultat exploitable');
+        completedMissingReturn++;
+        if (completedMissingReturn > maxCompletedMissingReturn) {
+          throw new Error(
+            'Le job s’est terminé mais le résultat n’est pas revenu depuis Redis. Vérifiez BULLMQ_PREFIX (identique Vercel / worker), les logs du worker, ou réessayez.',
+          );
+        }
+        await sleep(Math.min(400, interval));
+        continue;
       }
+      completedMissingReturn = 0;
       if (data.state === 'failed') {
         throw new Error(data.failedReason || 'Job échoué');
       }
