@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-// Vercel Pro : 60s max (vs 10s par défaut) — suffisant pour les gros imports bulkWrite
-export const maxDuration = 60;
 import { getDatabase } from '@/lib/mongodb';
 import { parseGygCsv, isGygCsv } from '@/lib/parsers/gyg';
-import { parseBookingCsv, isBookingCsv } from '@/lib/parsers/booking';
+import { analyzeBookingCsv, completeBookingParse, isBookingCsv } from '@/lib/parsers/booking';
 import { parseTiqetsCsv, isTiqetsCsv } from '@/lib/parsers/tiqets';
 import { parseDiscoverCarsCsv, isDiscoverCarsCsv } from '@/lib/parsers/discovercars';
 import { parseSendowlCsv, isSendowlCsv } from '@/lib/parsers/sendowl';
@@ -12,6 +9,9 @@ import { getCsvHeaders } from '@/lib/parsers/csv-utils';
 import { recalculateBookingCommissions } from '@/lib/booking-recalculate';
 import { buildAffiliateMaps } from '@/lib/affiliate-maps';
 import type { AffiliationPartner } from '@/lib/models/revenue';
+
+// Vercel Pro : 60s max (vs 10s par défaut) — les optimisations Booking réduisent le risque de 504
+export const maxDuration = 60;
 
 function detectPartner(headers: string[]): AffiliationPartner | null {
   if (isGygCsv(headers)) return 'getyourguide';
@@ -69,24 +69,42 @@ export async function POST(req: NextRequest) {
     } else if (partner === 'booking') {
       const col = db.collection('affiliation_revenue');
 
-      // Pré-parser pour obtenir les mois de check-in distincts
-      const { checkInMonths } = parseBookingCsv(text, {}, affiliateMaps.booking);
+      const bookingAnalysis = analyzeBookingCsv(text);
+      const { checkInMonths } = bookingAnalysis;
 
-      // Requêter MongoDB pour le volume N-1 par mois de check-in
+      // Un seul aller-retour Mongo : comptes stayed N-1 par mois (YYYY-MM)
+      const n1MonthsUnique = [
+        ...new Set(
+          checkInMonths.map((month) => {
+            const [year, mo] = month.split('-');
+            return `${parseInt(year, 10) - 1}-${mo}`;
+          }),
+        ),
+      ];
+
+      const n1CountByYm: Record<string, number> = {};
+      if (n1MonthsUnique.length > 0) {
+        const agg = await col
+          .aggregate([
+            { $match: { partner: 'booking', status: 'Stayed' } },
+            { $project: { ym: { $substr: ['$dateStr', 0, 7] } } },
+            { $match: { ym: { $in: n1MonthsUnique } } },
+            { $group: { _id: '$ym', n: { $sum: 1 } } },
+          ])
+          .toArray();
+        for (const r of agg) {
+          if (r._id) n1CountByYm[r._id as string] = r.n as number;
+        }
+      }
+
       const n1ByMonth: Record<string, number> = {};
       for (const month of checkInMonths) {
         const [year, mo] = month.split('-');
-        const prevYear = String(parseInt(year) - 1);
-        const n1Month = `${prevYear}-${mo}`;
-        const count = await col.countDocuments({
-          partner: 'booking',
-          dateStr: { $regex: `^${n1Month}` },
-          status: 'Stayed',
-        });
-        n1ByMonth[month] = count;
+        const n1Month = `${parseInt(year, 10) - 1}-${mo}`;
+        n1ByMonth[month] = n1CountByYm[n1Month] ?? 0;
       }
 
-      result = parseBookingCsv(text, n1ByMonth, affiliateMaps.booking);
+      result = completeBookingParse(bookingAnalysis, n1ByMonth, affiliateMaps.booking);
     } else if (partner === 'tiqets') {
       result = parseTiqetsCsv(text, affiliateMaps.tiqets);
     } else if (partner === 'discovercars') {
@@ -129,9 +147,17 @@ export async function POST(req: NextRequest) {
         },
       }));
       if (ops.length > 0) {
-        const bulkRes = await col.bulkWrite(ops, { ordered: false });
-        inserted  = bulkRes.upsertedCount;
-        updated   = bulkRes.modifiedCount;
+        const CHUNK = 800;
+        let upserted = 0;
+        let modified = 0;
+        for (let i = 0; i < ops.length; i += CHUNK) {
+          const slice = ops.slice(i, i + CHUNK);
+          const bulkRes = await col.bulkWrite(slice, { ordered: false });
+          upserted += bulkRes.upsertedCount;
+          modified += bulkRes.modifiedCount;
+        }
+        inserted = upserted;
+        updated = modified;
         duplicates = result.records.length - inserted - updated;
       }
     } else {

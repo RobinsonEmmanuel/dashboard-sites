@@ -50,47 +50,29 @@ export interface ParseResult {
   bookingDateFormat: 'DD/MM/YYYY' | 'MM/DD/YYYY';
 }
 
-/**
- * Tiers de commission Booking selon le volume mensuel de stayed reservations
- */
-export function getBookingTier(monthlyStayed: number): number {
-  if (monthlyStayed > 500) return 0.40;
-  if (monthlyStayed > 150) return 0.35;
-  if (monthlyStayed > 50)  return 0.30;
-  return 0.25;
+/** Résultat de la 1ère passe CSV (réutilisable pour éviter un double parsing complet). */
+export interface BookingCsvAnalysis {
+  rows: Record<string, string>[];
+  checkInMonths: string[];
+  stayedCounts: Record<string, number>;
+  bookingDateFormat: 'DD/MM/YYYY' | 'MM/DD/YYYY';
+  detectedColumns: string[];
 }
 
 /**
- * Booking.com CSV parser
- *
- * Logique de calcul des commissions :
- *   SÉJOURS TERMINÉS (status = "Stayed") :
- *     - "Your commission" = montant FINAL confirmé par Booking.com → commissionActual direct
- *     - "Commission %" = pourcentage réel appliqué → permet de back-calculer commissionMin
- *
- *   RÉSERVATIONS FUTURES (status = "Booked") :
- *     - "Your commission" = fourchette "X.XX - Y.YY" (valeur 25% → valeur 40%)
- *     - Tier estimé via le count N-1 stayed MongoDB pour ce mois de check-in
- *
- *   ANNULÉS : commission = 0, enregistrés pour statistiques
- *
- * dateStr = date de CHECK-IN (aligne le reporting avec la logique de paiement Booking)
- *
- * IMPORTANT : les dates de check-in utilisent le MÊME format (DD/MM ou MM/DD)
- * que les booking dates → on applique parseBookingDate aux deux colonnes.
+ * Analyse le CSV Booking une seule fois (1ère passe : mois de check-in, stayed par mois, format dates).
+ * À combiner avec `completeBookingParse` après avoir chargé les volumes N-1 MongoDB.
  */
-export function parseBookingCsv(
-  text: string,
-  n1ByMonth: Record<string, number> = {},
-  siteMap?: Record<string, string>,
-): ParseResult {
+export function analyzeBookingCsv(text: string): BookingCsvAnalysis {
   const rows = parseCsv(text);
-  const records: Omit<AffiliationRevenue, '_id'>[] = [];
-  let skipped = 0;
-  const errors: string[] = [];
-
   if (rows.length === 0) {
-    return { records, skipped, errors, checkInMonths: [], detectedColumns: [], bookingDateFormat: 'DD/MM/YYYY' as const };
+    return {
+      rows: [],
+      checkInMonths: [],
+      stayedCounts: {},
+      bookingDateFormat: 'DD/MM/YYYY',
+      detectedColumns: [],
+    };
   }
 
   const detectedColumns = Object.keys(rows[0]);
@@ -99,18 +81,13 @@ export function parseBookingCsv(
     return key ? row[key] : '';
   };
 
-  // Détecter le format de date UNE FOIS pour tout le fichier
-  // (même format pour booking date ET check-in date dans le même export)
   const bookingDateFormat = detectBookingDateFormat(rows);
-
-  // ── 1ère passe : compter les "Stayed" par mois de check-in ───────────────────
   const stayedCounts: Record<string, number> = {};
   const checkInMonthsSet = new Set<string>();
 
   for (const row of rows) {
     const get = makeGet(row);
     const checkInRaw = get('check-in date') || get('check-in') || get('check in');
-    // FIX : utiliser parseBookingDate (même format que booking date), pas normalizeDate
     const checkInStr = parseBookingDate(checkInRaw, bookingDateFormat);
     if (!checkInStr) continue;
 
@@ -123,9 +100,35 @@ export function parseBookingCsv(
     }
   }
 
-  const checkInMonths = [...checkInMonthsSet].sort();
+  return {
+    rows,
+    checkInMonths: [...checkInMonthsSet].sort(),
+    stayedCounts,
+    bookingDateFormat,
+    detectedColumns,
+  };
+}
 
-  // ── 2ème passe : générer les enregistrements ─────────────────────────────────
+/** 2e passe : construit les enregistrements à partir de `analyzeBookingCsv` + volumes N-1 MongoDB. */
+export function completeBookingParse(
+  analysis: BookingCsvAnalysis,
+  n1ByMonth: Record<string, number>,
+  siteMap?: Record<string, string>,
+): ParseResult {
+  const { rows, stayedCounts, bookingDateFormat, detectedColumns, checkInMonths } = analysis;
+  const records: Omit<AffiliationRevenue, '_id'>[] = [];
+  let skipped = 0;
+  const errors: string[] = [];
+
+  if (rows.length === 0) {
+    return { records, skipped, errors, checkInMonths: [], detectedColumns: [], bookingDateFormat: 'DD/MM/YYYY' };
+  }
+
+  const makeGet = (row: Record<string, string>) => (name: string) => {
+    const key = Object.keys(row).find((k) => k.toLowerCase().includes(name.toLowerCase()));
+    return key ? row[key] : '';
+  };
+
   for (const row of rows) {
     const get = makeGet(row);
 
@@ -141,13 +144,11 @@ export function parseBookingCsv(
     const bookingDateStr = parseBookingDate(bookingDateRaw, bookingDateFormat);
 
     const checkInRaw = get('check-in date') || get('check-in') || get('check in');
-    // FIX : même format pour check-in que pour booking date
     const checkInStr = parseBookingDate(checkInRaw, bookingDateFormat);
 
     const checkOutRaw = get('check-out date') || get('check-out') || get('check out');
     const checkOutStr = parseBookingDate(checkOutRaw, bookingDateFormat);
 
-    // dateStr = check-in date (aligne avec le reporting mensuel Booking.com / tiers)
     const dateStr = checkInStr || bookingDateStr;
 
     if (!dateStr) {
@@ -176,19 +177,14 @@ export function parseBookingCsv(
 
     if (!isCancelled && commissionRaw) {
       if (isStayed) {
-        // ─── Séjour terminé : Booking.com fournit la commission FINALE exacte ───
-        // "Your commission" = montant réel (ex: 13.01)
-        // "Commission %" = pourcentage réel (ex: 40)
         commissionActual = parseAmount(commissionRaw);
         if (commissionActual <= 0) { skipped++; continue; }
 
-        // Back-calculer commissionMin (base à 25%) depuis la commission réelle et le tier %
         const actualPct = parseAmount(commissionPctRaw) / 100;
         const tierPct   = actualPct > 0 ? actualPct : getBookingTier(stayedCounts[tierMonth] ?? 0);
         commissionMin   = tierPct > 0 ? Math.round(commissionActual * (0.25 / tierPct) * 100) / 100 : undefined;
 
       } else {
-        // ─── Réservation future (Booked) ou statut inconnu : "Your commission" = fourchette ─
         const rangeMatch = commissionRaw.match(/^([\d.,]+)\s*-\s*([\d.,]+)/);
         const minValue   = rangeMatch ? parseAmount(rangeMatch[1]) : parseAmount(commissionRaw);
 
@@ -197,10 +193,9 @@ export function parseBookingCsv(
         commissionMin = minValue;
         const base = minValue / 0.25;
 
-        // Estimation du tier pour les "Booked" via N-1 stayed count
         const tierCurrent = isBooked
           ? getBookingTier(n1ByMonth[tierMonth] ?? 0)
-          : 0.25; // statut inconnu → tier prudent
+          : 0.25;
 
         commissionActual = Math.round(base * tierCurrent * 100) / 100;
         const tierN1     = getBookingTier(n1ByMonth[tierMonth] ?? 0);
@@ -236,6 +231,44 @@ export function parseBookingCsv(
   }
 
   return { records, skipped, errors, checkInMonths, detectedColumns, bookingDateFormat };
+}
+
+/**
+ * Tiers de commission Booking selon le volume mensuel de stayed reservations
+ */
+export function getBookingTier(monthlyStayed: number): number {
+  if (monthlyStayed > 500) return 0.40;
+  if (monthlyStayed > 150) return 0.35;
+  if (monthlyStayed > 50)  return 0.30;
+  return 0.25;
+}
+
+/**
+ * Booking.com CSV parser
+ *
+ * Logique de calcul des commissions :
+ *   SÉJOURS TERMINÉS (status = "Stayed") :
+ *     - "Your commission" = montant FINAL confirmé par Booking.com → commissionActual direct
+ *     - "Commission %" = pourcentage réel appliqué → permet de back-calculer commissionMin
+ *
+ *   RÉSERVATIONS FUTURES (status = "Booked") :
+ *     - "Your commission" = fourchette "X.XX - Y.YY" (valeur 25% → valeur 40%)
+ *     - Tier estimé via le count N-1 stayed MongoDB pour ce mois de check-in
+ *
+ *   ANNULÉS : commission = 0, enregistrés pour statistiques
+ *
+ * dateStr = date de CHECK-IN (aligne le reporting avec la logique de paiement Booking)
+ *
+ * IMPORTANT : les dates de check-in utilisent le MÊME format (DD/MM ou MM/DD)
+ * que les booking dates → on applique parseBookingDate aux deux colonnes.
+ */
+export function parseBookingCsv(
+  text: string,
+  n1ByMonth: Record<string, number> = {},
+  siteMap?: Record<string, string>,
+): ParseResult {
+  const analysis = analyzeBookingCsv(text);
+  return completeBookingParse(analysis, n1ByMonth, siteMap);
 }
 
 /** Détection : le CSV Booking contient "Your commission" et "Affiliate ID" */

@@ -17,7 +17,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import { MongoClient, type AnyBulkWriteOperation } from 'mongodb';
+import { MongoClient, ObjectId, type AnyBulkWriteOperation } from 'mongodb';
 import { buildAffiliateMaps } from '@/lib/affiliate-maps';
 import type { AffiliationPartner } from '@/lib/models/revenue';
 
@@ -207,7 +207,7 @@ async function main() {
     if (!dryRun) {
       ops.push({
         updateOne: {
-          filter: { _id: doc._id },
+          filter: { _id: doc._id as ObjectId },
           update: { $set: { siteName: target } },
         },
       });

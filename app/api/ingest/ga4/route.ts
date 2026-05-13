@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ObjectId, type Filter, type Document } from 'mongodb';
 import { getDatabase } from '@/lib/mongodb';
 import { getGoogleAccessToken } from '@/lib/google-auth';
 import type { Site } from '@/lib/models/site';
 import type { TrafficDaily } from '@/lib/models/traffic';
+
+// Aligné sur l’import revenus : évite les 504 Vercel sur plusieurs propriétés GA4
+export const maxDuration = 60;
 
 const GA4_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly'];
 
@@ -100,10 +104,14 @@ export async function POST(request: NextRequest) {
     const incrementalStartDateStr = formatDate(incrementalStartDate);
 
     const db = await getDatabase();
-    const sitesQuery = siteFilter
-      ? { _id: siteFilter, active: true }
-      : { active: true };
-    const sites = await db.collection<Site>('sites').find(sitesQuery).toArray();
+    const sitesQuery = (
+      siteFilter && ObjectId.isValid(siteFilter)
+        ? { _id: new ObjectId(siteFilter), active: true }
+        : siteFilter
+          ? { _id: siteFilter, active: true }
+          : { active: true }
+    ) as Filter<Document>;
+    const sites = (await db.collection('sites').find(sitesQuery).toArray()) as unknown as Site[];
 
     if (sites.length === 0) {
       return NextResponse.json({ error: 'Aucun site actif trouvé' }, { status: 404 });

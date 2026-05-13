@@ -113,8 +113,12 @@ export async function recalculateBookingCommissions(db: Db): Promise<Recalculate
 
   let updated = 0;
   if (ops.length > 0) {
-    const result = await col.bulkWrite(ops);
-    updated = result.modifiedCount;
+    const CHUNK = 2000;
+    for (let i = 0; i < ops.length; i += CHUNK) {
+      const slice = ops.slice(i, i + CHUNK);
+      const result = await col.bulkWrite(slice, { ordered: false });
+      updated += result.modifiedCount;
+    }
   }
 
   const monthSummary: MonthSummary[] = Object.entries(summary)
