@@ -15,8 +15,10 @@ import { createBullmqConnection, bullmqPrefix } from '../../lib/jobs/redis-for-b
 import { runGa4Ingest } from '../../lib/jobs/run-ga4-ingest';
 import { runGscIngest } from '../../lib/jobs/run-gsc-ingest';
 import { runRevenueCsvImport } from '../../lib/jobs/run-revenue-import';
-import { INGEST_QUEUE_NAME } from '../../lib/jobs/ingest-queue-name';
 import type { AffiliationPartner } from '../../lib/models/revenue';
+
+/** Même valeur que `lib/jobs/ingest-queue-name.ts` (producers BullMQ côté Next). */
+const INGEST_QUEUE_NAME = 'dashboard-ingest';
 
 const connection = createBullmqConnection();
 
