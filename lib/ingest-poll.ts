@@ -3,6 +3,13 @@
  */
 
 import type { AffiliationPartner } from './models/revenue';
+import { parseResponseJson } from './parse-response-json';
+
+function notifyIngestQueueMaybeChanged() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ingest-queue-maybe-changed'));
+  }
+}
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -17,35 +24,39 @@ export async function waitForQueueJob(
   const timeout = opts?.timeoutMs ?? 20 * 60 * 1000;
   const deadline = Date.now() + timeout;
 
-  while (Date.now() < deadline) {
-    const res = await fetch(`/api/ingest/jobs/${encodeURIComponent(jobId)}`);
-    const data = (await res.json()) as {
-      error?: string;
-      state?: string;
-      returnvalue?: Record<string, unknown>;
-      failedReason?: string;
-    };
+  try {
+    while (Date.now() < deadline) {
+      const res = await fetch(`/api/ingest/jobs/${encodeURIComponent(jobId)}`);
+      const data = (await parseResponseJson(res)) as {
+        error?: string;
+        state?: string;
+        returnvalue?: Record<string, unknown>;
+        failedReason?: string;
+      };
 
-    if (!res.ok && res.status !== 404) {
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
-    if (res.status === 404 || !data.state) {
-      await sleep(interval);
-      continue;
-    }
-    if (data.state === 'completed') {
-      if (data.returnvalue && typeof data.returnvalue === 'object') {
-        return data.returnvalue as Record<string, unknown>;
+      if (!res.ok && res.status !== 404) {
+        throw new Error(data.error || `HTTP ${res.status}`);
       }
-      throw new Error('Job terminé sans résultat exploitable');
+      if (res.status === 404 || !data.state) {
+        await sleep(interval);
+        continue;
+      }
+      if (data.state === 'completed') {
+        if (data.returnvalue && typeof data.returnvalue === 'object') {
+          return data.returnvalue as Record<string, unknown>;
+        }
+        throw new Error('Job terminé sans résultat exploitable');
+      }
+      if (data.state === 'failed') {
+        throw new Error(data.failedReason || 'Job échoué');
+      }
+      await sleep(interval);
     }
-    if (data.state === 'failed') {
-      throw new Error(data.failedReason || 'Job échoué');
-    }
-    await sleep(interval);
-  }
 
-  throw new Error('Délai d’attente du job dépassé (timeout).');
+    throw new Error('Délai d’attente du job dépassé (timeout).');
+  } finally {
+    notifyIngestQueueMaybeChanged();
+  }
 }
 
 export async function waitForIngestJob(
@@ -66,9 +77,10 @@ export async function postIngest(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const data = (await res.json()) as { queued?: boolean; jobId?: string; error?: string };
+  const data = (await parseResponseJson(res)) as { queued?: boolean; jobId?: string; error?: string };
 
   if (res.status === 202 && data.queued && data.jobId) {
+    notifyIngestQueueMaybeChanged();
     return waitForQueueJob(String(data.jobId), { timeoutMs: pollOpts?.timeoutMs });
   }
 
@@ -92,7 +104,7 @@ export async function postRevenueImport(
   if (partnerOverride) fd.append('partner', partnerOverride);
 
   const res = await fetch('/api/revenue/import', { method: 'POST', body: fd });
-  const data = (await res.json()) as {
+  const data = (await parseResponseJson(res)) as {
     queued?: boolean;
     jobId?: string;
     error?: string;
@@ -100,6 +112,7 @@ export async function postRevenueImport(
   };
 
   if (res.status === 202 && data.queued && data.jobId) {
+    notifyIngestQueueMaybeChanged();
     const out = await waitForQueueJob(String(data.jobId), {
       timeoutMs: pollOpts?.timeoutMs ?? 45 * 60 * 1000,
     });

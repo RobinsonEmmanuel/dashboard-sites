@@ -63,3 +63,42 @@ export async function getIngestJobState(jobId: string) {
     finishedOn: job.finishedOn,
   };
 }
+
+export type IngestQueueListItem = {
+  id: string;
+  name: string;
+  state: 'waiting' | 'active' | 'delayed';
+  partner?: string;
+  timestamp: number;
+};
+
+/** Jobs visibles dans l’UI (file + worker), sans corps volumineux. */
+export async function listIngestQueueJobs(): Promise<IngestQueueListItem[]> {
+  const queue = getIngestQueue();
+  const states = ['waiting', 'active', 'delayed'] as const;
+  const chunks = await Promise.all(
+    states.map((state) => queue.getJobs([state], 0, 40)),
+  );
+  const out: IngestQueueListItem[] = [];
+  for (let i = 0; i < states.length; i++) {
+    const state = states[i];
+    for (const job of chunks[i]) {
+      const id = job.id ?? '';
+      const name = job.name ?? 'job';
+      const raw = job.data as { partner?: string } | undefined;
+      const partner =
+        name === 'revenue-import' && raw && typeof raw.partner === 'string'
+          ? raw.partner
+          : undefined;
+      out.push({
+        id: String(id),
+        name: String(name),
+        state,
+        partner,
+        timestamp: typeof job.timestamp === 'number' ? job.timestamp : 0,
+      });
+    }
+  }
+  out.sort((a, b) => b.timestamp - a.timestamp);
+  return out;
+}

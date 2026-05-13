@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline';
 import type { AffiliationPartner } from '@/lib/models/revenue';
 import { postRevenueImport } from '@/lib/ingest-poll';
+import { parseResponseJson } from '@/lib/parse-response-json';
 
 const PARTNERS: { id: AffiliationPartner; label: string; color: string }[] = [
   { id: 'getyourguide', label: 'GetYourGuide', color: '#FF5533' },
@@ -89,9 +90,13 @@ export default function RevenueCsvImport({
       .filter(Boolean);
 
     const qs = new URLSearchParams({ headers: headers.join(',') });
-    const res = await fetch(`/api/revenue/import?${qs}`);
-    const data = await res.json();
-    setDetectedPartner((data.partner ?? null) as AffiliationPartner | null);
+    try {
+      const res = await fetch(`/api/revenue/import?${qs}`);
+      const data = (await parseResponseJson(res)) as { partner?: AffiliationPartner | null };
+      setDetectedPartner((data.partner ?? null) as AffiliationPartner | null);
+    } catch {
+      setDetectedPartner(null);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {

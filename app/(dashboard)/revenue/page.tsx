@@ -23,6 +23,7 @@ import {
   getAvailableYears,
 } from '@/lib/period-utils';
 import { postRevenueImport } from '@/lib/ingest-poll';
+import { parseResponseJson } from '@/lib/parse-response-json';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -531,7 +532,7 @@ export default function RevenuePage() {
     const headers = firstLine.split(/[,;\t]/).map((h) => h.trim().replace(/^"|"$/g, ''));
     const qs = new URLSearchParams({ headers: headers.join(',') });
     const res  = await fetch(`/api/revenue/import?${qs}`);
-    const data = await res.json();
+    const data = await parseResponseJson(res) as { partner?: AffiliationPartner | null };
     setDetectedPartner(data.partner ?? null);
   };
 

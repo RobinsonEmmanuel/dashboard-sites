@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { isAuthenticated } from '@/lib/auth';
 import Sidebar from '@/components/Sidebar';
+import IngestJobsDock from '@/components/IngestJobsDock';
 
 export default function DashboardLayout({
   children,
@@ -45,6 +46,7 @@ export default function DashboardLayout({
       <main className="flex-1 overflow-y-auto">
         {children}
       </main>
+      <IngestJobsDock />
     </div>
   );
 }
