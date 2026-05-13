@@ -23,6 +23,7 @@ import RevenuePeriodSelector, {
   getInitialPeriod,
   type PeriodState,
 } from '@/components/RevenuePeriodSelector';
+import { postIngest } from '@/lib/ingest-poll';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -286,15 +287,15 @@ export default function OverviewPage() {
     setSyncMsg('Synchronisation en cours…');
     setError('');
     try {
-      const [ga4Res, gscRes] = await Promise.all([
-        fetch('/api/ingest/ga4', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
-        fetch('/api/ingest/gsc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'smart' }) }),
+      const [ga4, gsc] = await Promise.all([
+        postIngest('/api/ingest/ga4', { mode: 'smart' }),
+        postIngest('/api/ingest/gsc', { mode: 'smart' }),
       ]);
-      const ga4 = await ga4Res.json();
-      const gsc = await gscRes.json();
-      if (ga4.error) throw new Error(`GA4 : ${ga4.error}`);
-      if (gsc.error) throw new Error(`GSC : ${gsc.error}`);
-      setSyncMsg(`Synchronisé — GA4 : ${ga4.totalRecords ?? 0} enreg., GSC : ${(gsc.totalDaily ?? 0) + (gsc.totalPages ?? 0)} enreg.`);
+      if ('error' in ga4 && ga4.error) throw new Error(`GA4 : ${String(ga4.error)}`);
+      if ('error' in gsc && gsc.error) throw new Error(`GSC : ${String(gsc.error)}`);
+      const gscDaily = Number(gsc.totalDaily ?? 0);
+      const gscPages = Number(gsc.totalPages ?? 0);
+      setSyncMsg(`Synchronisé — GA4 : ${Number(ga4.totalRecords ?? 0)} enreg., GSC : ${gscDaily + gscPages} enreg.`);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur de synchronisation');

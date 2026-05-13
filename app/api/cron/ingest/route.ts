@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ingestQueueEnabled, enqueueGa4Ingest, enqueueGscIngest } from '@/lib/jobs/ingest-queue';
 
 /**
  * GET /api/cron/ingest
@@ -6,9 +7,8 @@ import { NextRequest, NextResponse } from 'next/server';
  * Déclenché automatiquement par Vercel Cron Jobs (vercel.json).
  * Vercel envoie automatiquement : Authorization: Bearer <CRON_SECRET>
  *
- * Variables d'environnement requises :
- *   CRON_SECRET          — secret partagé avec Vercel
- *   VERCEL_PROJECT_PRODUCTION_URL  — fourni auto par Vercel en production
+ * Si BULLMQ_REDIS_URL est défini : enfile GA4 + GSC (traitement par le worker Railway).
+ * Sinon : déclenche les routes d’ingestion HTTP sur ce déploiement (comportement historique).
  */
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -16,8 +16,23 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Vercel fournit VERCEL_PROJECT_PRODUCTION_URL en production (sans https://)
-  // On peut aussi définir NEXT_PUBLIC_APP_URL comme fallback manuel
+  const startTime = Date.now();
+
+  if (ingestQueueEnabled()) {
+    const [ga4Job, gscJob] = await Promise.all([
+      enqueueGa4Ingest({ mode: 'incremental' }),
+      enqueueGscIngest({ mode: 'incremental' }),
+    ]);
+    const durationMs = Date.now() - startTime;
+    return NextResponse.json({
+      success: true,
+      queued: true,
+      durationMs,
+      ga4JobId: String(ga4Job.id),
+      gscJobId: String(gscJob.id),
+    });
+  }
+
   const host =
     process.env.VERCEL_PROJECT_PRODUCTION_URL
       ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
@@ -25,13 +40,10 @@ export async function GET(request: NextRequest) {
 
   const headers = {
     'Content-Type': 'application/json',
-    // On transmet le secret pour que les routes ingest puissent aussi le vérifier si besoin
     Authorization: `Bearer ${process.env.CRON_SECRET}`,
   };
 
   const body = JSON.stringify({ mode: 'incremental' });
-
-  const startTime = Date.now();
 
   const [gscRes, ga4Res] = await Promise.allSettled([
     fetch(`${host}/api/ingest/gsc`, { method: 'POST', headers, body }),

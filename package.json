@@ -2,16 +2,22 @@
   "name": "dashboard-sites",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "worker"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "worker:ingest": "tsx worker/src/index.ts",
     "reassign-affiliation": "tsx scripts/reassign-affiliation-revenue.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "bullmq": "^5.34.5",
     "google-auth-library": "^10.6.1",
+    "ioredis": "^5.4.2",
     "mongodb": "^7.1.0",
     "next": "16.1.6",
     "react": "19.2.3",

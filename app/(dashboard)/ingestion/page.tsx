@@ -9,6 +9,7 @@ import {
   BoltIcon,
 } from '@heroicons/react/24/outline';
 import RevenueCsvImport from '@/components/RevenueCsvImport';
+import { postIngest } from '@/lib/ingest-poll';
 
 type SiteResultGA4 = {
   site: string;
@@ -71,17 +72,9 @@ export default function IngestionPage() {
   const runJob = async (index: number) => {
     updateJob(index, { status: 'running', result: null, error: '' });
     try {
-      const res = await fetch(jobs[index].endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        updateJob(index, { status: 'error', error: data.error || 'Erreur inconnue' });
-      } else {
-        updateJob(index, { status: 'done', result: data });
-      }
+      const pollTimeout = mode === 'full' ? 55 * 60 * 1000 : 25 * 60 * 1000;
+      const data = await postIngest(jobs[index].endpoint, { mode }, { timeoutMs: pollTimeout });
+      updateJob(index, { status: 'done', result: data as IngestResult });
     } catch (err) {
       updateJob(index, { status: 'error', error: String(err) });
     }
@@ -140,8 +133,15 @@ export default function IngestionPage() {
             Historique complet (740 jours)
           </button>
         </div>
-        <p className="text-xs mt-3 px-3 py-2 rounded-lg border
-          {mode === 'smart' ? 'text-blue-700 bg-blue-50 border-blue-200' : mode === 'full' ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-gray-500 bg-gray-50 border-gray-200'}">
+        <p
+          className={`text-xs mt-3 px-3 py-2 rounded-lg border ${
+            mode === 'smart'
+              ? 'text-blue-700 bg-blue-50 border-blue-200'
+              : mode === 'full'
+                ? 'text-amber-600 bg-amber-50 border-amber-200'
+                : 'text-gray-500 bg-gray-50 border-gray-200'
+          }`}
+        >
           {mode === 'smart' && 'Reprend automatiquement depuis la dernière date en base pour chaque site. Premier lancement = historique complet automatique.'}
           {mode === 'incremental' && 'Récupère uniquement les 3 derniers jours. Utile pour les mises à jour rapides.'}
           {mode === 'full' && "Recharge les 740 derniers jours pour tous les sites. Peut prendre plusieurs minutes."}
