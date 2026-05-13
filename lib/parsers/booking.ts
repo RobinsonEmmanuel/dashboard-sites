@@ -1,5 +1,5 @@
-import type { AffiliationRevenue } from '@/lib/models/revenue';
-import { BOOKING_AFFILIATE_MAP } from '@/lib/mappings/booking-affiliates';
+import type { AffiliationRevenue } from '../models/revenue';
+import { BOOKING_AFFILIATE_MAP } from '../mappings/booking-affiliates';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
 
 /**

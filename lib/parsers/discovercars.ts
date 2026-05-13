@@ -1,5 +1,5 @@
-import type { AffiliationRevenue } from '@/lib/models/revenue';
-import { DISCOVERCARS_CHANNEL_MAP } from '@/lib/mappings/discovercars-channels';
+import type { AffiliationRevenue } from '../models/revenue';
+import { DISCOVERCARS_CHANNEL_MAP } from '../mappings/discovercars-channels';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
 
 export interface ParseResult {

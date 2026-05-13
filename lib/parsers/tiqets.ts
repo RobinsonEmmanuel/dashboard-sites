@@ -1,5 +1,5 @@
-import type { AffiliationRevenue } from '@/lib/models/revenue';
-import { TIQETS_CAMPAIGN_MAP } from '@/lib/mappings/tiqets-campaigns';
+import type { AffiliationRevenue } from '../models/revenue';
+import { TIQETS_CAMPAIGN_MAP } from '../mappings/tiqets-campaigns';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
 
 export interface ParseResult {

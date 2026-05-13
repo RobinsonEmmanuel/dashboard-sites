@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "build": "node ../scripts/build-ingest-worker.mjs",
+    "start": "node dist/worker.mjs",
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {

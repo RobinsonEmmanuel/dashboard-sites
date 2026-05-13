@@ -1,5 +1,5 @@
-import type { AffiliationRevenue } from '@/lib/models/revenue';
-import { GYG_CAMPAIGN_MAP } from '@/lib/mappings/gyg-campaigns';
+import type { AffiliationRevenue } from '../models/revenue';
+import { GYG_CAMPAIGN_MAP } from '../mappings/gyg-campaigns';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
 
 export interface ParseResult {

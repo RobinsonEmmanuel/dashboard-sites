@@ -13,7 +13,7 @@
  */
 
 import type { Db } from 'mongodb';
-import { getBookingTier } from '@/lib/parsers/booking';
+import { getBookingTier } from './parsers/booking';
 
 export interface RecalculateResult {
   recordsScanned: number;

@@ -2,7 +2,7 @@
  * Attente des jobs BullMQ (GA4, GSC, import revenus CSV) via GET /api/ingest/jobs/:id.
  */
 
-import type { AffiliationPartner } from '@/lib/models/revenue';
+import type { AffiliationPartner } from './models/revenue';
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));

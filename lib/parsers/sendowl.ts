@@ -1,4 +1,4 @@
-import type { AffiliationRevenue } from '@/lib/models/revenue';
+import type { AffiliationRevenue } from '../models/revenue';
 import { parseCsv, normalizeDate, parseAmount } from './csv-utils';
 
 export interface ParseResult {

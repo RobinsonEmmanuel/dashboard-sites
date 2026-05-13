@@ -20,6 +20,9 @@ node_modules
 # production
 /build
 
+# worker bundle (généré par npm run build:ingest-worker)
+worker/dist
+
 # misc
 .DS_Store
 *.pem
