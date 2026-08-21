@@ -1,10 +1,14 @@
 /**
- * Contexte métier injecté dans l'analyse de trajectoire.
+ * Forme du contexte métier injecté dans l'analyse de trajectoire.
  *
- * C'est l'équivalent du « profil client » d'auditor : sans lui, le modèle produit
- * des recommandations génériques qui ignorent ce qu'on cherche à faire. À relire
- * et corriger à chaque changement de cap — le fichier est versionné, donc chaque
- * analyse passée reste interprétable au vu du contexte de l'époque.
+ * C'est l'équivalent du « profil client » d'auditor : sans lui, le modèle produit des
+ * recommandations génériques qui ignorent ce qu'on cherche à faire.
+ *
+ * La VALEUR se saisit dans l'interface (page Trajectoire) et vit en base — cf.
+ * `context-store.ts`. Ce fichier ne garde que le type et un gabarit de départ, utilisé
+ * tant qu'aucun contexte n'a été enregistré. Les textes « À COMPLÉTER » sont éliminés à
+ * la lecture : un gabarit non rempli doit ressortir comme non renseigné, jamais comme
+ * une consigne.
  *
  * Les noms de sites doivent être des `shortName` (cf. `lib/models/site.ts`).
  */
@@ -24,7 +28,7 @@ export interface ContexteMetier {
   evenements_a_connaitre: string[];
 }
 
-export const CONTEXTE_METIER: ContexteMetier = {
+export const CONTEXTE_METIER_DEFAUT: ContexteMetier = {
   horizon: 'À COMPLÉTER — ex. « doubler le revenu d\'affiliation à 24 mois sans augmenter le rythme de production »',
   objectifs: [
     'À COMPLÉTER — objectif chiffré pour l\'année en cours',

@@ -14,7 +14,7 @@
 import { getDatabase } from '../mongodb';
 import type { AffiliationPartner } from '../models/revenue';
 import type { Site } from '../models/site';
-import { CONTEXTE_METIER } from './context';
+import { lireContexte } from './context-store';
 import { COLLECTION_ACTIVITE, COLLECTION_STOCK } from '../editorial/models';
 import { dateDerniereVeille, listerVeille } from './veille-store';
 import {
@@ -166,7 +166,7 @@ export async function buildTrajectoryDossier(
   const [
     sites, dernierTraficDocs, dernierGscDocs, fraicheurRevenus, premiersMoisDocs,
     promessesBrutes, realiseBrut, traficBrut, gscBrut,
-    editoRows, stockRows, stockAnterieurRows, evenementsVeille, veilleLe,
+    editoRows, stockRows, stockAnterieurRows, evenementsVeille, veilleLe, contexteEnregistre,
   ] = await Promise.all([
     db.collection<Site>('sites')
       .find({}, {
@@ -267,6 +267,7 @@ export async function buildTrajectoryDossier(
 
     listerVeille({ seulementRetenus: true }),
     dateDerniereVeille(),
+    lireContexte(),
   ]);
 
   const dernierJourTrafic = (dernierTraficDocs[0]?.dateStr as string) ?? null;
@@ -928,6 +929,11 @@ export async function buildTrajectoryDossier(
     'Les leviers SEO sont un instantané 30 jours rafraîchi seulement lors d\'une synchronisation « full » : aucune tendance ne peut en être tirée.',
     'Le nombre de commandes est un compte de lignes d\'import : une même réservation modifiée peut apparaître plusieurs fois selon le partenaire.',
   ];
+  if (contexteEnregistre.champs_non_renseignes.length > 0) {
+    avertissements.push(
+      `Contexte métier incomplet (${contexteEnregistre.champs_non_renseignes.join(', ')}) : ne rien supposer sur ces points, et le signaler une fois plutôt que d'inventer un objectif.`,
+    );
+  }
   if (nonAttribueMontant > 0) {
     const p = part(nonAttribueMontant, basePromesses);
     avertissements.push(
@@ -952,7 +958,11 @@ export async function buildTrajectoryDossier(
       lecture:
         'Montants en euros. Taux et parts en pourcentage (déjà ×100). « Promesses » = commission à la date de commande ; « réalisé » = commission à la date d\'encaissement. RPM = promesses pour 1 000 sessions.',
     },
-    contexte_metier: CONTEXTE_METIER,
+    contexte_metier: {
+      ...contexteEnregistre.contexte,
+      champs_non_renseignes: contexteEnregistre.champs_non_renseignes,
+      modifie_le: contexteEnregistre.modifie_le,
+    },
     fiabilite: {
       derniere_donnee: {
         trafic_ga4: dernierJourTrafic,

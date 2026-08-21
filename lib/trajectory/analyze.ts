@@ -294,9 +294,10 @@ const SYSTEM_ANALYSE = [
 
   'CONTEXTE MÉTIER. Le bloc `contexte_metier` donne les objectifs, les sites en investissement ou en ' +
   'récolte, les contraintes et les décisions ouvertes. Ancre constats et actions dessus, et adresse ' +
-  'explicitement chaque décision ouverte. Si un champ contient encore « À COMPLÉTER », traite-le comme ' +
-  'non renseigné : ne fais aucune supposition sur les objectifs, et signale-le une fois comme constat ' +
-  'd\'axe « fiabilite_donnees ».',
+  'explicitement chaque décision ouverte. Le champ `champs_non_renseignes` liste ce qui n\'a pas été ' +
+  'saisi : sur ces points, ne suppose RIEN — n\'invente pas un objectif chiffré, ne devine pas quel ' +
+  'site est en investissement. Signale-le une seule fois comme constat d\'axe « fiabilite_donnees », ' +
+  'et formule alors tes actions sans les rattacher à un objectif que tu ne connais pas.',
 
   'SUIVI. Si `actions_precedentes` n\'est pas vide, produis une entrée par action, avec le chiffre qui ' +
   'fonde son statut. « indeterminable » est une réponse acceptable et préférable à un jugement forcé ; ' +

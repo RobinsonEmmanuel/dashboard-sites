@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { parseResponseJson } from '@/lib/parse-response-json';
 import { waitForQueueJob } from '@/lib/ingest-poll';
+import TrajectoryContext from '@/components/TrajectoryContext';
 import { moisLisible } from '@/lib/trajectory/months';
 import type {
   AnalyseTrajectoireDoc,
@@ -306,6 +307,8 @@ export default function TrajectoryPage() {
         </div>
       )}
 
+      <TrajectoryContext />
+
       {chargement && !doc && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-10 text-center text-gray-400 text-sm">
           Chargement…
@@ -317,10 +320,10 @@ export default function TrajectoryPage() {
           <ArrowTrendingUpIcon className="w-10 h-10 text-gray-300 mx-auto" />
           <p className="mt-3 text-sm font-medium text-gray-900">Aucune analyse pour le moment</p>
           <p className="mt-1 text-sm text-gray-500 max-w-lg mx-auto">
-            Avant la première analyse, vérifiez le contexte métier dans
-            <code className="mx-1 px-1.5 py-0.5 bg-gray-100 rounded text-xs">lib/trajectory/context.ts</code>
-            : objectifs, sites en investissement et décisions ouvertes. Sans lui, les
-            recommandations restent génériques.
+            Renseignez d&apos;abord le contexte métier ci-dessus — objectifs, arbitrage
+            investissement / récolte, décisions à trancher. C&apos;est le seul bloc que ni le
+            calcul ni la recherche web ne peuvent produire, et sans lui les recommandations
+            restent génériques.
           </p>
         </div>
       )}
