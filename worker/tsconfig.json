@@ -9,5 +9,5 @@
     "noEmit": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "../lib/jobs/**/*.ts", "../lib/mongodb.ts", "../lib/google-auth.ts", "../lib/models/**/*.ts"]
+  "include": ["src/**/*.ts", "../lib/jobs/**/*.ts", "../lib/mongodb.ts", "../lib/google-auth.ts", "../lib/models/**/*.ts", "../lib/trajectory/**/*.ts", "../lib/editorial/**/*.ts"]
 }

@@ -1,5 +1,6 @@
 /**
- * Worker Railway : file BullMQ `dashboard-ingest` (GA4, GSC, import CSV revenus).
+ * Worker Railway : file BullMQ `dashboard-ingest` (GA4, GSC, import CSV revenus,
+ * analyse de trajectoire).
  *
  * Variables d’environnement (mêmes que Vercel pour l’ingestion) :
  *   BULLMQ_REDIS_URL   — URL Redis Upstash (onglet « Redis », format rediss://)
@@ -8,6 +9,7 @@
  *   GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY
  *
  * Import CSV revenus : même MongoDB ; pas d’appel Google.
+ * Analyse de trajectoire : nécessite OPENAI_API_KEY (deux appels, ~2 à 4 min).
  */
 
 import { Worker } from 'bullmq';
@@ -15,6 +17,9 @@ import { createBullmqConnection, bullmqPrefix } from './redis-connection';
 import { runGa4Ingest } from '../../lib/jobs/run-ga4-ingest';
 import { runGscIngest } from '../../lib/jobs/run-gsc-ingest';
 import { runRevenueCsvImport } from '../../lib/jobs/run-revenue-import';
+import { runTrajectoryAnalysis } from '../../lib/jobs/run-trajectory-analysis';
+import { runEditorialImport } from '../../lib/jobs/run-editorial-import';
+import { runVeille } from '../../lib/jobs/run-veille';
 import type { AffiliationPartner } from '../../lib/models/revenue';
 
 /** Même valeur que `lib/jobs/ingest-queue-name.ts` (producers BullMQ côté Next). */
@@ -27,6 +32,19 @@ const worker = new Worker(
   async (job) => {
     if (job.name === 'ga4') return await runGa4Ingest(job.data ?? {});
     if (job.name === 'gsc') return await runGscIngest(job.data ?? {});
+    if (job.name === 'editorial-import') {
+      const raw = (job.data ?? {}) as { todayStr?: string; dryRun?: boolean };
+      return JSON.parse(JSON.stringify(await runEditorialImport(raw))) as Record<string, unknown>;
+    }
+    if (job.name === 'veille') {
+      const raw = (job.data ?? {}) as { todayStr?: string; moisCouverts?: number };
+      return JSON.parse(JSON.stringify(await runVeille(raw))) as Record<string, unknown>;
+    }
+    if (job.name === 'trajectory-analysis') {
+      const raw = (job.data ?? {}) as { todayStr?: string; sansSuivi?: boolean };
+      const r = await runTrajectoryAnalysis(raw);
+      return JSON.parse(JSON.stringify(r)) as Record<string, unknown>;
+    }
     if (job.name === 'revenue-import') {
       const raw = (job.data ?? {}) as { text?: string; partner?: AffiliationPartner };
       const r = await runRevenueCsvImport({

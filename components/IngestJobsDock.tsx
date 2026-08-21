@@ -21,6 +21,9 @@ function labelName(name: string) {
   if (name === 'ga4') return 'GA4';
   if (name === 'gsc') return 'Search Console';
   if (name === 'revenue-import') return 'Import CSV revenus';
+  if (name === 'trajectory-analysis') return 'Analyse de trajectoire';
+  if (name === 'editorial-import') return 'Import tableau éditorial';
+  if (name === 'veille') return 'Veille externe';
   return name;
 }
 

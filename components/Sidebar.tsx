@@ -8,6 +8,7 @@ import {
   MagnifyingGlassCircleIcon,
   CurrencyEuroIcon,
   CalendarDaysIcon,
+  ArrowTrendingUpIcon,
   GlobeAltIcon,
   ArrowPathIcon,
   ChevronLeftIcon,
@@ -22,6 +23,7 @@ const menuItems = [
   { name: 'Performance SEO', icon: MagnifyingGlassCircleIcon, href: '/seo' },
   { name: 'Revenus', icon: CurrencyEuroIcon, href: '/revenue' },
   { name: 'Promesses', icon: CalendarDaysIcon, href: '/promises' },
+  { name: 'Trajectoire', icon: ArrowTrendingUpIcon, href: '/trajectory' },
 ];
 
 const bottomItems = [

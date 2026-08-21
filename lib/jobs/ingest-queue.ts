@@ -4,6 +4,9 @@ import { INGEST_QUEUE_NAME } from './ingest-queue-name';
 import type { Ga4IngestInput } from './run-ga4-ingest';
 import type { GscIngestInput } from './run-gsc-ingest';
 import type { RevenueImportInput } from './run-revenue-import';
+import type { TrajectoryAnalysisInput } from './run-trajectory-analysis';
+import type { EditorialImportInput } from './run-editorial-import';
+import type { VeilleInput } from './run-veille';
 
 export { INGEST_QUEUE_NAME };
 
@@ -44,6 +47,27 @@ export async function enqueueRevenueImport(data: RevenueImportInput) {
   const queue = getIngestQueue();
   return queue.add('revenue-import', data, {
     jobId: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  });
+}
+
+export async function enqueueTrajectoryAnalysis(data: TrajectoryAnalysisInput) {
+  const queue = getIngestQueue();
+  return queue.add('trajectory-analysis', data, {
+    jobId: `traj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  });
+}
+
+export async function enqueueEditorialImport(data: EditorialImportInput) {
+  const queue = getIngestQueue();
+  return queue.add('editorial-import', data, {
+    jobId: `edito-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  });
+}
+
+export async function enqueueVeille(data: VeilleInput) {
+  const queue = getIngestQueue();
+  return queue.add('veille', data, {
+    jobId: `veille-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
   });
 }
 

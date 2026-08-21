@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ingestQueueEnabled, enqueueGa4Ingest, enqueueGscIngest } from '@/lib/jobs/ingest-queue';
+import { ingestQueueEnabled, enqueueGa4Ingest, enqueueGscIngest, enqueueEditorialImport } from '@/lib/jobs/ingest-queue';
 
 /**
  * GET /api/cron/ingest
@@ -7,7 +7,8 @@ import { ingestQueueEnabled, enqueueGa4Ingest, enqueueGscIngest } from '@/lib/jo
  * Déclenché automatiquement par Vercel Cron Jobs (vercel.json).
  * Vercel envoie automatiquement : Authorization: Bearer <CRON_SECRET>
  *
- * Si BULLMQ_REDIS_URL est défini : enfile GA4 + GSC (traitement par le worker Railway).
+ * Si BULLMQ_REDIS_URL est défini : enfile GA4 + GSC + import du tableau éditorial
+ * (traitement par le worker Railway).
  * Sinon : déclenche les routes d’ingestion HTTP sur ce déploiement (comportement historique).
  */
 export async function GET(request: NextRequest) {
@@ -19,9 +20,11 @@ export async function GET(request: NextRequest) {
   const startTime = Date.now();
 
   if (ingestQueueEnabled()) {
-    const [ga4Job, gscJob] = await Promise.all([
+    const [ga4Job, gscJob, editoJob] = await Promise.all([
       enqueueGa4Ingest({ mode: 'incremental' }),
       enqueueGscIngest({ mode: 'incremental' }),
+      // Le tableau éditorial est tenu à la main et bouge tous les jours : import quotidien.
+      enqueueEditorialImport({}),
     ]);
     const durationMs = Date.now() - startTime;
     return NextResponse.json({
@@ -30,6 +33,7 @@ export async function GET(request: NextRequest) {
       durationMs,
       ga4JobId: String(ga4Job.id),
       gscJobId: String(gscJob.id),
+      editorialJobId: String(editoJob.id),
     });
   }
 
@@ -45,9 +49,10 @@ export async function GET(request: NextRequest) {
 
   const body = JSON.stringify({ mode: 'incremental' });
 
-  const [gscRes, ga4Res] = await Promise.allSettled([
+  const [gscRes, ga4Res, editoRes] = await Promise.allSettled([
     fetch(`${host}/api/ingest/gsc`, { method: 'POST', headers, body }),
     fetch(`${host}/api/ingest/ga4`, { method: 'POST', headers, body }),
+    fetch(`${host}/api/editorial/import`, { method: 'POST', headers, body: '{}' }),
   ]);
 
   const parseResult = async (
@@ -66,9 +71,10 @@ export async function GET(request: NextRequest) {
     return { ok: res.ok, status: res.status, ...data };
   };
 
-  const [gsc, ga4] = await Promise.all([
+  const [gsc, ga4, editorial] = await Promise.all([
     parseResult(gscRes, 'GSC'),
     parseResult(ga4Res, 'GA4'),
+    parseResult(editoRes, 'Tableau éditorial'),
   ]);
 
   const durationMs = Date.now() - startTime;
@@ -77,7 +83,7 @@ export async function GET(request: NextRequest) {
   console.log(`[CRON] Ingestion terminée en ${durationMs}ms — GSC: ${gsc.ok ? 'OK' : 'ERREUR'} | GA4: ${ga4.ok ? 'OK' : 'ERREUR'}`);
 
   return NextResponse.json(
-    { success, durationMs, gsc, ga4 },
+    { success, durationMs, gsc, ga4, editorial },
     { status: success ? 200 : 207 }
   );
 }
