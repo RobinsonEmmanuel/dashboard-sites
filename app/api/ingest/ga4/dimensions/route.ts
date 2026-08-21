@@ -15,6 +15,12 @@
  * route fait donc les deux : elle lit les définitions via l'API Admin, puis interroge
  * l'API Data pour afficher les domaines réellement collectés, avec leur volume.
  *
+ * Le verdict est porté par la SECONDE vérification, pas la première : interroger les
+ * données prouve à la fois que la dimension existe et qu'elle est alimentée, alors que
+ * l'inventaire ne prouve que son existence. L'API Admin ne sert donc qu'à enrichir la
+ * réponse, et son indisponibilité — elle s'active séparément dans Google Cloud — ne
+ * bloque pas le diagnostic.
+ *
  * Rappel : une dimension personnalisée n'est PAS rétroactive. Elle doit être créée avant
  * que les données ne soient utiles, pas au moment où on en a besoin.
  */
@@ -57,6 +63,14 @@ async function dimensionsDeLaPropriete(propertyId: string, token: string): Promi
   }));
 }
 
+type ResultatSonde =
+  | { etat: 'valeurs'; domaines: Array<{ domaine: string; evenements: number }> }
+  | { etat: 'dimension_inconnue' }
+  | { etat: 'erreur'; message: string };
+
+/** Une dimension non enregistrée fait échouer la requête avec un message identifiable. */
+const DIMENSION_INCONNUE = /not a valid dimension|did not match|Field .* is not/i;
+
 /** Valeurs réellement collectées : le seul test qui prouve que la balise envoie le paramètre. */
 async function domainesCollectes(
   propertyId: string,
@@ -64,7 +78,7 @@ async function domainesCollectes(
   evenement: string,
   parametre: string,
   jours: number,
-): Promise<Array<{ domaine: string; evenements: number }>> {
+): Promise<ResultatSonde> {
   const res = await fetch(
     `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
     {
@@ -84,15 +98,19 @@ async function domainesCollectes(
   );
   if (!res.ok) {
     const texte = await res.text();
-    throw new Error(`Data API ${res.status}: ${texte.slice(0, 200)}`);
+    if (DIMENSION_INCONNUE.test(texte)) return { etat: 'dimension_inconnue' };
+    return { etat: 'erreur', message: `Data API ${res.status}: ${texte.slice(0, 200)}` };
   }
   const data = (await res.json()) as {
     rows?: Array<{ dimensionValues: Array<{ value: string }>; metricValues: Array<{ value: string }> }>;
   };
-  return (data.rows ?? []).map((r) => ({
-    domaine: r.dimensionValues[0]?.value ?? '',
-    evenements: Number(r.metricValues[0]?.value ?? 0),
-  }));
+  return {
+    etat: 'valeurs',
+    domaines: (data.rows ?? []).map((r) => ({
+      domaine: r.dimensionValues[0]?.value ?? '',
+      evenements: Number(r.metricValues[0]?.value ?? 0),
+    })),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -114,61 +132,70 @@ export async function GET(req: NextRequest) {
       };
 
       if (!site.ga4PropertyId) {
-        return { ...base, statut: 'sans_propriete' as const, dimensions: [], domaines: [], correction: 'Aucun Property ID sur la fiche du site.' };
+        return { ...base, statut: 'sans_propriete' as const, dimensions: [], inventaireIndisponible: null, domaines: [], correction: 'Aucun Property ID sur la fiche du site.' };
       }
 
+      /* L'inventaire est un complément : son échec (API Admin non activée dans le
+       * projet Google Cloud) ne doit pas empêcher le diagnostic. */
+      let dimensions: DimensionGa4[] = [];
+      let inventaireIndisponible: string | null = null;
       try {
-        const dimensions = await dimensionsDeLaPropriete(site.ga4PropertyId, token);
-        const cible = dimensions.find((d) => d.parametre === PARAMETRE_CIBLE);
+        dimensions = await dimensionsDeLaPropriete(site.ga4PropertyId, token);
+      } catch (e) {
+        inventaireIndisponible = e instanceof Error ? e.message : String(e);
+      }
 
-        if (!cible) {
-          // Sur l'événement automatique, GA4 fournit `linkDomain` sans configuration.
-          if (site.linkEvent === EVENEMENT_GENERIQUE) {
-            return {
-              ...base,
-              statut: 'dimension_native_possible' as const,
-              dimensions, domaines: [],
-              correction: `Aucune dimension « ${PARAMETRE_CIBLE} », mais ce site compte l'événement automatique « click » : GA4 expose alors nativement le domaine du lien, sans configuration. Rien à créer ici — à confirmer au moment de brancher l'ingestion.`,
-            };
-          }
+      const sonde = await domainesCollectes(
+        site.ga4PropertyId, token, site.linkEvent, PARAMETRE_CIBLE, jours,
+      );
+
+      if (sonde.etat === 'erreur') {
+        return { ...base, statut: 'erreur' as const, dimensions, inventaireIndisponible, domaines: [], correction: sonde.message };
+      }
+
+      if (sonde.etat === 'dimension_inconnue') {
+        // Sur l'événement automatique, GA4 fournit `linkDomain` sans configuration.
+        if (site.linkEvent === EVENEMENT_GENERIQUE) {
           return {
             ...base,
-            statut: 'a_creer' as const,
-            dimensions, domaines: [],
-            correction: `Créer la dimension : Admin → Définitions personnalisées → Créer, portée « Événement », paramètre « ${PARAMETRE_CIBLE} ». Non rétroactive : les données ne remonteront qu'à partir de sa création.`,
+            statut: 'dimension_native_possible' as const,
+            dimensions, inventaireIndisponible, domaines: [],
+            correction: `Aucune dimension « ${PARAMETRE_CIBLE} », mais ce site compte l'événement automatique « click » : GA4 expose alors nativement le domaine du lien, sans configuration. Rien à créer ici.`,
           };
         }
-
-        const domaines = await domainesCollectes(
-          site.ga4PropertyId, token, site.linkEvent, PARAMETRE_CIBLE, jours,
-        );
-        const renseignes = domaines.filter((d) => d.domaine && d.domaine !== '(not set)');
-        const total = domaines.reduce((s, d) => s + d.evenements, 0);
-        const vides = total - renseignes.reduce((s, d) => s + d.evenements, 0);
-
-        if (renseignes.length === 0) {
-          return {
-            ...base,
-            statut: 'declaree_non_alimentee' as const,
-            dimensions, domaines,
-            correction: `La dimension existe mais aucune valeur n'est collectée sur ${jours} jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie pas le paramètre « ${PARAMETRE_CIBLE} » : c'est le conteneur qu'il faut corriger, pas GA4.`,
-          };
-        }
-
         return {
           ...base,
-          statut: 'ok' as const,
-          dimensions,
-          domaines: renseignes,
-          part_non_renseignee_pct: total > 0 ? Math.round((vides / total) * 1000) / 10 : null,
-          correction: vides > 0
-            ? `${vides} clics sortants sur ${total} n'ont pas de domaine renseigné : la balise ne remplit pas toujours le paramètre. Utilisable, mais la ventilation par partenaire sera incomplète d'autant.`
-            : null,
+          statut: 'a_creer' as const,
+          dimensions, inventaireIndisponible, domaines: [],
+          correction: `Créer la dimension : Admin → Définitions personnalisées → Créer, portée « Événement », paramètre « ${PARAMETRE_CIBLE} ». Non rétroactive : les données ne remonteront qu'à partir de sa création.`,
         };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return { ...base, statut: 'erreur' as const, dimensions: [], domaines: [], correction: msg };
       }
+
+      const renseignes = sonde.domaines.filter((d) => d.domaine && d.domaine !== '(not set)');
+      const total = sonde.domaines.reduce((s2, d) => s2 + d.evenements, 0);
+      const vides = total - renseignes.reduce((s2, d) => s2 + d.evenements, 0);
+
+      if (renseignes.length === 0) {
+        return {
+          ...base,
+          statut: 'declaree_non_alimentee' as const,
+          dimensions, inventaireIndisponible, domaines: sonde.domaines,
+          correction: `La dimension est reconnue mais aucune valeur n'est collectée sur ${jours} jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie pas le paramètre « ${PARAMETRE_CIBLE} » : c'est le conteneur qu'il faut corriger, pas GA4.`,
+        };
+      }
+
+      return {
+        ...base,
+        statut: 'ok' as const,
+        dimensions,
+        inventaireIndisponible,
+        domaines: renseignes,
+        part_non_renseignee_pct: total > 0 ? Math.round((vides / total) * 1000) / 10 : null,
+        correction: vides > 0
+          ? `${vides} clics sortants sur ${total} n'ont pas de domaine renseigné : la balise ne remplit pas toujours le paramètre. Utilisable, mais la ventilation par partenaire sera incomplète d'autant.`
+          : null,
+      };
+
     }));
 
     return NextResponse.json({
@@ -182,6 +209,11 @@ export async function GET(req: NextRequest) {
         sans_propriete: diagnostics.filter((d) => d.statut === 'sans_propriete').length,
         erreur: diagnostics.filter((d) => d.statut === 'erreur').length,
       },
+      /* L'inventaire complet demande l'activation de l'API Admin dans le projet Google
+       * Cloud. Le diagnostic fonctionne sans, mais la liste des dimensions reste vide. */
+      inventaire_indisponible: diagnostics.some((d) => d.inventaireIndisponible)
+        ? 'API Admin non activée : les verdicts restent valides (ils viennent des données), mais la liste des dimensions par propriété est vide. Activer « Google Analytics Admin API » dans le projet Google Cloud pour l\'obtenir.'
+        : null,
       diagnostics,
     });
   } catch (error) {
