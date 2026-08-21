@@ -271,6 +271,15 @@ const SYSTEM_ANALYSE = [
   'd\'abord établi par nos chiffres. Si le contexte externe est vide ou périmé (voir ' +
   '`derniere_veille`), ne suppose rien et ne va pas chercher l\'explication ailleurs.',
 
+  'CLICS SORTANTS — le champ `evenement_clic_sortant` de chaque site donne l\'événement GA4 ' +
+  'compté. Deux définitions coexistent et ne sont pas équivalentes : « click » est l\'événement ' +
+  'automatique de GA4 et compte TOUS les liens sortants, y compris non affiliés ; un événement ' +
+  'personnalisé ne se déclenche que sur les liens affiliés. Ne compare donc jamais un taux de clic ' +
+  'sortant entre deux sites qui n\'utilisent pas le même événement, et ne conclus rien sur ' +
+  'l\'entonnoir d\'un site dont les clics sortants sont à zéro alors qu\'il a des sessions : c\'est ' +
+  'un défaut de mesure, à traiter comme un correctif démontré d\'axe « fiabilite_donnees », pas comme ' +
+  'une faiblesse de conversion.',
+
   'CHIFFRES ET PREUVES (impératif). Interdits absolus dans tout texte : les noms de champ techniques ' +
   '(`promesses_par_partenaire`, `hhi_sites`, `rolling12`, etc.), les décimales brutes, et tout chiffre ' +
   'absent du dossier. Écris des montants arrondis à l\'euro, des pourcentages à une décimale au plus, et ' +

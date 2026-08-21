@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { parseResponseJson } from '@/lib/parse-response-json';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import type { Site } from '@/lib/models/site';
 
@@ -43,6 +44,40 @@ export default function SiteModal({ site, onClose, onSaved }: Props) {
         }
       : EMPTY
   );
+
+  /* Événements réellement collectés par la propriété GA4. L'ingestion filtre sur un nom
+   * EXACT : un nom qui ne correspond pas ne produit pas d'erreur, il produit zéro. On
+   * propose donc la vérité de la propriété plutôt qu'une liste figée de deux valeurs. */
+  const [evenements, setEvenements] = useState<Array<{ nom: string; evenements: number }> | null>(null);
+  const [chargementEvts, setChargementEvts] = useState(false);
+  const [erreurEvts, setErreurEvts] = useState<string | null>(null);
+
+  const chargerEvenements = async () => {
+    if (!form.ga4PropertyId.trim()) {
+      setErreurEvts('Renseignez d\'abord le Property ID.');
+      return;
+    }
+    setChargementEvts(true);
+    setErreurEvts(null);
+    try {
+      const res = await fetch(`/api/ingest/ga4/events?propertyId=${encodeURIComponent(form.ga4PropertyId.trim())}&days=30`);
+      const data = await parseResponseJson<{
+        evenements?: Array<{ nom: string; evenements: number }>;
+        candidats?: Array<{ nom: string; evenements: number }>;
+        error?: string;
+      }>(res);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const liste = data.evenements ?? [];
+      setEvenements(liste);
+      if (liste.length === 0) setErreurEvts('Aucun événement collecté sur 30 jours pour cette propriété.');
+    } catch (e) {
+      setErreurEvts(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChargementEvts(false);
+    }
+  };
+
+  const candidats = (evenements ?? []).filter((e) => /click|clic|exit|outbound|affil|sortant/i.test(e.nom));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -126,11 +161,51 @@ export default function SiteModal({ site, onClose, onSaved }: Props) {
                 <input value={form.ga4PropertyId} onChange={(e) => set('ga4PropertyId', e.target.value)} required placeholder="334290963" className={`${inputCls} font-mono`} />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Événement lien <span className="text-red-500">*</span></label>
-                <select value={form.linkEvent} onChange={(e) => set('linkEvent', e.target.value)} className={`${inputCls} bg-white`}>
-                  <option value="click">click</option>
-                  <option value="clic_affiliation">clic_affiliation</option>
-                </select>
+                <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Événement clic sortant <span className="text-red-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => { void chargerEvenements(); }}
+                    disabled={chargementEvts}
+                    className="text-xs font-medium text-[#f57503] hover:underline disabled:opacity-40"
+                  >
+                    {chargementEvts ? 'Lecture…' : 'Lire les événements GA4'}
+                  </button>
+                </div>
+                <input
+                  list="ga4-evenements"
+                  value={form.linkEvent}
+                  onChange={(e) => set('linkEvent', e.target.value)}
+                  required
+                  placeholder="clic_exit_link"
+                  className={`${inputCls} font-mono`}
+                />
+                <datalist id="ga4-evenements">
+                  {(evenements ?? []).map((e) => (
+                    <option key={e.nom} value={e.nom}>{`${e.evenements} événements sur 30 j`}</option>
+                  ))}
+                </datalist>
+                {erreurEvts && <p className="text-xs text-red-600 mt-1">{erreurEvts}</p>}
+                {candidats.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Candidats dans cette propriété :{' '}
+                    {candidats.map((c, i) => (
+                      <span key={c.nom}>
+                        {i > 0 && ', '}
+                        <button
+                          type="button"
+                          onClick={() => set('linkEvent', c.nom)}
+                          className="font-mono text-[#f57503] hover:underline"
+                        >
+                          {c.nom}
+                        </button>
+                        {` (${c.evenements})`}
+                      </span>
+                    ))}
+                  </p>
+                )}
               </div>
             </div>
           </div>

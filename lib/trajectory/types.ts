@@ -235,6 +235,14 @@ export interface DossierTrajectoire {
     nom_complet: string;
     actif: boolean;
     premier_mois_trafic: string | null;
+    /**
+     * Nom de l'événement GA4 compté comme clic sortant. Deux définitions coexistent et
+     * ne sont PAS équivalentes : `click` est l'événement automatique de GA4 (tout lien
+     * sortant, y compris non affilié), un événement personnalisé du type
+     * `clic_exit_link` ne se déclenche que sur les liens affiliés. Les taux de clic
+     * sortant ne sont donc comparables qu'entre sites partageant la même définition.
+     */
+    evenement_clic_sortant: string;
     codes_affiliation_renseignes: string[];
     codes_affiliation_manquants: string[];
   }>;

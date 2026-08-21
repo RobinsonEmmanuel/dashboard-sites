@@ -929,6 +929,28 @@ export async function buildTrajectoryDossier(
     'Les leviers SEO sont un instantané 30 jours rafraîchi seulement lors d\'une synchronisation « full » : aucune tendance ne peut en être tirée.',
     'Le nombre de commandes est un compte de lignes d\'import : une même réservation modifiée peut apparaître plusieurs fois selon le partenaire.',
   ];
+  /* Un site qui reçoit des sessions sans jamais remonter de clic sortant a presque
+   * toujours un événement GA4 mal nommé, pas un entonnoir réellement vide : l'ingestion
+   * filtre sur un nom exact et renvoie zéro sans erreur si le nom ne correspond pas. */
+  const sansClicSortant = entonnoir
+    .filter((e) => e.courant.sessions > 0 && e.courant.clics_sortants === 0)
+    .map((e) => `${e.site} (événement configuré : ${siteMeta.get(e.site)?.linkEvent ?? '?'})`);
+  if (sansClicSortant.length > 0) {
+    avertissements.push(
+      `Aucun clic sortant mesuré malgré des sessions sur : ${sansClicSortant.join(', ')}. ` +
+      'Leur entonnoir est inexploitable en aval des sessions, et leurs taux de conversion ne doivent pas être commentés.',
+    );
+  }
+
+  const definitions = new Set(sites.filter((s) => s.active).map((s) => s.linkEvent));
+  if (definitions.size > 1) {
+    avertissements.push(
+      `Les clics sortants ne reposent pas sur la même définition partout (${[...definitions].join(', ')}) : ` +
+      'l\'événement automatique « click » compte tous les liens sortants, un événement personnalisé ne compte que les liens affiliés. ' +
+      'Les taux de clic sortant ne sont comparables qu\'entre sites partageant la même définition.',
+    );
+  }
+
   if (contexteEnregistre.champs_non_renseignes.length > 0) {
     avertissements.push(
       `Contexte métier incomplet (${contexteEnregistre.champs_non_renseignes.join(', ')}) : ne rien supposer sur ces points, et le signaler une fois plutôt que d'inventer un objectif.`,
@@ -995,6 +1017,7 @@ export async function buildTrajectoryDossier(
           nom_complet: s.name,
           actif: s.active,
           premier_mois_trafic: premierMoisParSite.get(s.shortName) ?? null,
+          evenement_clic_sortant: s.linkEvent,
           codes_affiliation_renseignes: renseignes,
           codes_affiliation_manquants: codesManquants(s),
         };
