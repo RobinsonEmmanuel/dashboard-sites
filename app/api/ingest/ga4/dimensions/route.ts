@@ -35,8 +35,20 @@ const GA4_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly'];
 /** Le paramètre qui porte le domaine de destination du clic sortant. */
 const PARAMETRE_CIBLE = 'exit_link_domain';
 
-/** L'événement automatique de GA4 dispose d'une dimension `linkDomain` native. */
+/**
+ * Repli : si le domaine n'est pas envoyé mais l'URL complète l'est, le domaine s'en
+ * déduit en code. Cardinalité énorme côté GA4, mais on n'agrège que le domaine, donc
+ * une requête sur les valeurs les plus fréquentes suffit à établir que la donnée existe.
+ */
+const PARAMETRE_REPLI = 'exit_link_url';
+
+/**
+ * L'événement automatique de GA4 dispose d'une dimension `linkDomain` NATIVE, sans
+ * aucune configuration. Pour ces sites, envoyer l'utilisateur corriger un conteneur GTM
+ * serait un contresens : il n'y a rien à configurer.
+ */
 const EVENEMENT_GENERIQUE = 'click';
+const DIMENSION_NATIVE = 'linkDomain';
 
 interface DimensionGa4 {
   nom_affiche: string;
@@ -72,11 +84,11 @@ type ResultatSonde =
 const DIMENSION_INCONNUE = /not a valid dimension|did not match|Field .* is not/i;
 
 /** Valeurs réellement collectées : le seul test qui prouve que la balise envoie le paramètre. */
-async function domainesCollectes(
+async function sonder(
   propertyId: string,
   token: string,
   evenement: string,
-  parametre: string,
+  dimensionApi: string,
   jours: number,
 ): Promise<ResultatSonde> {
   const res = await fetch(
@@ -86,7 +98,7 @@ async function domainesCollectes(
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         dateRanges: [{ startDate: `${jours}daysAgo`, endDate: 'today' }],
-        dimensions: [{ name: `customEvent:${parametre}` }],
+        dimensions: [{ name: dimensionApi }],
         metrics: [{ name: 'eventCount' }],
         dimensionFilter: {
           filter: { fieldName: 'eventName', stringFilter: { value: evenement, matchType: 'EXACT' } },
@@ -132,7 +144,7 @@ export async function GET(req: NextRequest) {
       };
 
       if (!site.ga4PropertyId) {
-        return { ...base, statut: 'sans_propriete' as const, dimensions: [], inventaireIndisponible: null, domaines: [], correction: 'Aucun Property ID sur la fiche du site.' };
+        return { ...base, statut: 'sans_propriete' as const, dimensions: [], inventaireIndisponible: null, source: null, domaines: [], correction: 'Aucun Property ID sur la fiche du site.' };
       }
 
       /* L'inventaire est un complément : son échec (API Admin non activée dans le
@@ -145,57 +157,96 @@ export async function GET(req: NextRequest) {
         inventaireIndisponible = e instanceof Error ? e.message : String(e);
       }
 
-      const sonde = await domainesCollectes(
-        site.ga4PropertyId, token, site.linkEvent, PARAMETRE_CIBLE, jours,
-      );
+      const commun = { ...base, dimensions, inventaireIndisponible };
 
-      if (sonde.etat === 'erreur') {
-        return { ...base, statut: 'erreur' as const, dimensions, inventaireIndisponible, domaines: [], correction: sonde.message };
-      }
+      const renseignees = (r: ResultatSonde) =>
+        r.etat === 'valeurs' ? r.domaines.filter((d) => d.domaine && d.domaine !== '(not set)') : [];
+      const volumeTotal = (r: ResultatSonde) =>
+        r.etat === 'valeurs' ? r.domaines.reduce((acc, d) => acc + d.evenements, 0) : 0;
+      const partVide = (r: ResultatSonde) => {
+        const total = volumeTotal(r);
+        if (total === 0) return null;
+        const utiles = renseignees(r).reduce((acc, d) => acc + d.evenements, 0);
+        return Math.round(((total - utiles) / total) * 1000) / 10;
+      };
 
-      if (sonde.etat === 'dimension_inconnue') {
-        // Sur l'événement automatique, GA4 fournit `linkDomain` sans configuration.
-        if (site.linkEvent === EVENEMENT_GENERIQUE) {
+      /* Site sur l'événement automatique : la dimension native est la bonne source, et
+       * elle ne demande aucune configuration. Ne jamais renvoyer ces sites vers GTM. */
+      if (site.linkEvent === EVENEMENT_GENERIQUE) {
+        const natif = await sonder(site.ga4PropertyId, token, EVENEMENT_GENERIQUE, DIMENSION_NATIVE, jours);
+        if (natif.etat === 'erreur') {
+          return { ...commun, statut: 'erreur' as const, source: null, domaines: [], correction: natif.message };
+        }
+        const utiles = renseignees(natif);
+        if (utiles.length > 0) {
           return {
-            ...base,
-            statut: 'dimension_native_possible' as const,
-            dimensions, inventaireIndisponible, domaines: [],
-            correction: `Aucune dimension « ${PARAMETRE_CIBLE} », mais ce site compte l'événement automatique « click » : GA4 expose alors nativement le domaine du lien, sans configuration. Rien à créer ici.`,
+            ...commun,
+            statut: 'ok_natif' as const,
+            source: DIMENSION_NATIVE,
+            domaines: utiles,
+            part_non_renseignee_pct: partVide(natif),
+            correction: 'Rien à configurer : le domaine vient de la dimension native de GA4. Attention, « click » compte tous les liens sortants, donc la ventilation inclura des domaines non partenaires.',
           };
         }
         return {
-          ...base,
-          statut: 'a_creer' as const,
-          dimensions, inventaireIndisponible, domaines: [],
-          correction: `Créer la dimension : Admin → Définitions personnalisées → Créer, portée « Événement », paramètre « ${PARAMETRE_CIBLE} ». Non rétroactive : les données ne remonteront qu'à partir de sa création.`,
+          ...commun,
+          statut: 'natif_vide' as const,
+          source: DIMENSION_NATIVE,
+          domaines: natif.etat === 'valeurs' ? natif.domaines : [],
+          correction: `La dimension native « ${DIMENSION_NATIVE} » ne renvoie aucun domaine sur ${jours} jours. Vérifier que « Clics sortants » est bien activé dans la mesure améliorée du flux de données.`,
         };
       }
 
-      const renseignes = sonde.domaines.filter((d) => d.domaine && d.domaine !== '(not set)');
-      const total = sonde.domaines.reduce((s2, d) => s2 + d.evenements, 0);
-      const vides = total - renseignes.reduce((s2, d) => s2 + d.evenements, 0);
+      /* Site sur un événement dédié : le paramètre attendu, puis son repli. */
+      const cible = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_CIBLE}`, jours);
+      if (cible.etat === 'erreur') {
+        return { ...commun, statut: 'erreur' as const, source: null, domaines: [], correction: cible.message };
+      }
 
-      if (renseignes.length === 0) {
+      const utilesCible = renseignees(cible);
+      if (utilesCible.length > 0) {
         return {
-          ...base,
-          statut: 'declaree_non_alimentee' as const,
-          dimensions, inventaireIndisponible, domaines: sonde.domaines,
-          correction: `La dimension est reconnue mais aucune valeur n'est collectée sur ${jours} jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie pas le paramètre « ${PARAMETRE_CIBLE} » : c'est le conteneur qu'il faut corriger, pas GA4.`,
+          ...commun,
+          statut: 'ok' as const,
+          source: PARAMETRE_CIBLE,
+          domaines: utilesCible,
+          part_non_renseignee_pct: partVide(cible),
+          correction: null,
+        };
+      }
+
+      /* Avant d'envoyer qui que ce soit modifier un conteneur GTM : l'URL complète
+       * suffit, le domaine s'en extrait. Un chantier évité s'il est déjà envoyé. */
+      const repli = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_REPLI}`, jours);
+      const utilesRepli = renseignees(repli);
+      if (utilesRepli.length > 0) {
+        return {
+          ...commun,
+          statut: 'ok_via_url' as const,
+          source: PARAMETRE_REPLI,
+          domaines: utilesRepli,
+          part_non_renseignee_pct: partVide(repli),
+          correction: `Le domaine n'est pas envoyé, mais l'URL complète l'est : le domaine s'en déduit à l'ingestion, sans toucher au conteneur GTM. Aucune action requise sur ce site.`,
+        };
+      }
+
+      if (cible.etat === 'dimension_inconnue') {
+        return {
+          ...commun,
+          statut: 'a_creer' as const,
+          source: null,
+          domaines: [],
+          correction: `Créer la dimension : Admin → Définitions personnalisées → Créer, portée « Événement », paramètre « ${PARAMETRE_CIBLE} ». La balise de ce site envoie déjà ce paramètre, donc la mesure fonctionnera dès la création — mais elle n'est PAS rétroactive.`,
         };
       }
 
       return {
-        ...base,
-        statut: 'ok' as const,
-        dimensions,
-        inventaireIndisponible,
-        domaines: renseignes,
-        part_non_renseignee_pct: total > 0 ? Math.round((vides / total) * 1000) / 10 : null,
-        correction: vides > 0
-          ? `${vides} clics sortants sur ${total} n'ont pas de domaine renseigné : la balise ne remplit pas toujours le paramètre. Utilisable, mais la ventilation par partenaire sera incomplète d'autant.`
-          : null,
+        ...commun,
+        statut: 'declaree_non_alimentee' as const,
+        source: null,
+        domaines: cible.etat === 'valeurs' ? cible.domaines : [],
+        correction: `Ni « ${PARAMETRE_CIBLE} » ni « ${PARAMETRE_REPLI} » ne sont alimentés sur ${jours} jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie aucun paramètre de destination : c'est le conteneur qu'il faut compléter, pas GA4.`,
       };
-
     }));
 
     return NextResponse.json({
@@ -203,9 +254,11 @@ export async function GET(req: NextRequest) {
       parametre_cible: PARAMETRE_CIBLE,
       resume: {
         ok: diagnostics.filter((d) => d.statut === 'ok').length,
+        ok_via_url: diagnostics.filter((d) => d.statut === 'ok_via_url').length,
+        ok_natif: diagnostics.filter((d) => d.statut === 'ok_natif').length,
         a_creer: diagnostics.filter((d) => d.statut === 'a_creer').length,
         declaree_non_alimentee: diagnostics.filter((d) => d.statut === 'declaree_non_alimentee').length,
-        dimension_native_possible: diagnostics.filter((d) => d.statut === 'dimension_native_possible').length,
+        natif_vide: diagnostics.filter((d) => d.statut === 'natif_vide').length,
         sans_propriete: diagnostics.filter((d) => d.statut === 'sans_propriete').length,
         erreur: diagnostics.filter((d) => d.statut === 'erreur').length,
       },
