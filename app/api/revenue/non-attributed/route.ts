@@ -6,7 +6,10 @@ import { buildAffiliateMaps } from '@/lib/affiliate-maps';
 
 const PARTNERS: AffiliationPartner[] = ['getyourguide', 'booking', 'tiqets', 'discovercars', 'sendowl'];
 
-type MappingKind = 'affiliateId' | 'productName';
+type MappingKind = 'affiliateId' | 'productName' | 'aucun';
+
+/** Libellé du groupe des lignes sans aucun identifiant exploitable. */
+const SANS_IDENTIFIANT = '(aucun identifiant)';
 
 export interface UnassignedGroup {
   partner: AffiliationPartner;
@@ -87,11 +90,22 @@ export async function GET(req: NextRequest) {
       },
       {
         $addFields: {
-          mappingKind: { $cond: ['$hasAffiliateId', 'affiliateId', 'productName'] },
-          mappingKey: { $cond: ['$hasAffiliateId', '$affiliateId', { $ifNull: ['$productName', ''] }] },
+          _cleBrute: { $cond: ['$hasAffiliateId', '$affiliateId', { $ifNull: ['$productName', ''] }] },
         },
       },
-      { $match: { mappingKey: { $ne: '' } } },
+      {
+        /* Les lignes sans aucun identifiant étaient auparavant écartées. C'est la
+         * catégorie la plus lourde chez certains partenaires, et l'écarter faisait
+         * disparaître le principal motif de non-attribution : le rapport paraissait
+         * complet alors qu'il masquait l'essentiel. Elles sont désormais regroupées
+         * sous un libellé explicite. */
+        $addFields: {
+          mappingKind: {
+            $cond: [{ $eq: ['$_cleBrute', ''] }, 'aucun', { $cond: ['$hasAffiliateId', 'affiliateId', 'productName'] }],
+          },
+          mappingKey: { $cond: [{ $eq: ['$_cleBrute', ''] }, SANS_IDENTIFIANT, '$_cleBrute'] },
+        },
+      },
       {
         $group: {
           _id: { partner: '$partner', mappingKind: '$mappingKind', mappingKey: '$mappingKey' },
@@ -128,6 +142,13 @@ export async function GET(req: NextRequest) {
         reason = mapped
           ? 'Clé trouvée dans le mapping, mais `siteName` manquant (incohérence)'
           : `Clé non mappée (${partner} / ${mappingKey})`;
+      } else if (mappingKind === 'aucun') {
+        reason =
+          `Aucun identifiant sur ces lignes (ni code d'affiliation, ni nom de produit) : ` +
+          `rien ne permet de les rattacher à un site. Ce n'est pas un mapping à compléter mais un ` +
+          `balisage de liens à corriger — les liens ${partner} concernés ne portent pas le paramètre ` +
+          `qui identifie le site. Aucun code ajouté sur une fiche site ne récupérera ce revenu, ` +
+          `ni pour le passé ni pour l'avenir tant que les liens ne sont pas corrigés.`;
       } else {
         // productName
         if (partner === 'sendowl') {
@@ -165,13 +186,36 @@ export async function GET(req: NextRequest) {
       groupsByPartner[g.partner].push(g);
     }
 
+    /* Totaux par partenaire, en distinguant ce qui est corrigeable par un mapping de ce
+     * qui demande un travail sur les liens : les deux ne se traitent pas au même endroit. */
+    const totauxParPartenaire = PARTNERS.map((p) => {
+      const gs = groupsByPartner[p];
+      const sansIdentifiant = gs.filter((g) => g.mappingKind === 'aucun');
+      const mappables = gs.filter((g) => g.mappingKind !== 'aucun');
+      const somme = (arr: UnassignedGroup[]) => Math.round(arr.reduce((s2, g) => s2 + g.revenue, 0) * 100) / 100;
+      return {
+        partner: p,
+        revenue: somme(gs),
+        count: gs.reduce((s2, g) => s2 + g.count, 0),
+        nb_groupes: gs.length,
+        revenue_corrigeable_par_mapping: somme(mappables),
+        revenue_sans_identifiant: somme(sansIdentifiant),
+      };
+    }).filter((t) => t.count > 0).sort((a, b) => b.revenue - a.revenue);
+
     return NextResponse.json({
       periodType,
       periodValue,
       startStr,
       endStr,
+      limit,
+      /* Une liste tronquée sans le dire laisserait croire à un inventaire complet. */
+      tronque: groups.length >= limit
+        ? `Liste tronquée à ${limit} groupes : relancer avec un limit plus élevé pour l'inventaire complet.`
+        : null,
+      totauxParPartenaire,
       groupsByPartner,
-      totalRevenue: groups.reduce((s, g) => s + g.revenue, 0),
+      totalRevenue: Math.round(groups.reduce((s, g) => s + g.revenue, 0) * 100) / 100,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
