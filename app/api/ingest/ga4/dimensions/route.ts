@@ -21,8 +21,12 @@
  * réponse, et son indisponibilité — elle s'active séparément dans Google Cloud — ne
  * bloque pas le diagnostic.
  *
- * Rappel : une dimension personnalisée n'est PAS rétroactive. Elle doit être créée avant
- * que les données ne soient utiles, pas au moment où on en a besoin.
+ * DEUX FENÊTRES, et c'est essentiel : une dimension personnalisée n'est alimentée qu'à
+ * partir de sa création. Juger son alimentation sur 30 jours revient à la juger sur 29
+ * jours d'événements antérieurs, qui resteront « (not set) » pour toujours — le verdict
+ * resterait négatif pendant des semaines quoi que fasse la balise. Le verdict est donc
+ * porté par une fenêtre COURTE et récente, et la répartition par domaine par la fenêtre
+ * demandée, qui donne le volume.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -49,6 +53,9 @@ const PARAMETRE_REPLI = 'exit_link_url';
  */
 const EVENEMENT_GENERIQUE = 'click';
 const DIMENSION_NATIVE = 'linkDomain';
+
+/** Fenêtre du verdict : assez courte pour ne contenir que du post-création. */
+const JOURS_VERDICT = 2;
 
 interface DimensionGa4 {
   nom_affiche: string;
@@ -197,33 +204,40 @@ export async function GET(req: NextRequest) {
         };
       }
 
-      /* Site sur un événement dédié : le paramètre attendu, puis son repli. */
-      const cible = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_CIBLE}`, jours);
-      if (cible.etat === 'erreur') {
-        return { ...commun, statut: 'erreur' as const, source: null, domaines: [], correction: cible.message };
+      /* Site sur un événement dédié : le paramètre attendu, puis son repli.
+       * Le verdict se juge sur les derniers jours, la répartition sur la fenêtre demandée. */
+      const cibleRecente = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_CIBLE}`, JOURS_VERDICT);
+      if (cibleRecente.etat === 'erreur') {
+        return { ...commun, statut: 'erreur' as const, source: null, domaines: [], correction: cibleRecente.message };
       }
 
-      const utilesCible = renseignees(cible);
-      if (utilesCible.length > 0) {
+      if (renseignees(cibleRecente).length > 0) {
+        const cible = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_CIBLE}`, jours);
         return {
           ...commun,
           statut: 'ok' as const,
           source: PARAMETRE_CIBLE,
-          domaines: utilesCible,
+          jours_verdict: JOURS_VERDICT,
+          domaines: renseignees(cible),
           part_non_renseignee_pct: partVide(cible),
-          correction: null,
+          part_non_renseignee_recente_pct: partVide(cibleRecente),
+          correction: partVide(cible) && partVide(cible)! > 20
+            ? `Alimentée depuis peu : sur ${jours} jours, ${partVide(cible)} % des clics n'ont pas de domaine parce qu'ils précèdent la création de la dimension. La part récente est de ${partVide(cibleRecente)} %. L'historique antérieur ne sera jamais ventilable.`
+            : null,
         };
       }
+      const cible = cibleRecente;
 
       /* Avant d'envoyer qui que ce soit modifier un conteneur GTM : l'URL complète
        * suffit, le domaine s'en extrait. Un chantier évité s'il est déjà envoyé. */
-      const repli = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_REPLI}`, jours);
+      const repli = await sonder(site.ga4PropertyId, token, site.linkEvent, `customEvent:${PARAMETRE_REPLI}`, JOURS_VERDICT);
       const utilesRepli = renseignees(repli);
       if (utilesRepli.length > 0) {
         return {
           ...commun,
           statut: 'ok_via_url' as const,
           source: PARAMETRE_REPLI,
+          jours_verdict: JOURS_VERDICT,
           domaines: utilesRepli,
           part_non_renseignee_pct: partVide(repli),
           correction: `Le domaine n'est pas envoyé, mais l'URL complète l'est : le domaine s'en déduit à l'ingestion, sans toucher au conteneur GTM. Aucune action requise sur ce site.`,
@@ -244,13 +258,16 @@ export async function GET(req: NextRequest) {
         ...commun,
         statut: 'declaree_non_alimentee' as const,
         source: null,
+        jours_verdict: JOURS_VERDICT,
         domaines: cible.etat === 'valeurs' ? cible.domaines : [],
-        correction: `Ni « ${PARAMETRE_CIBLE} » ni « ${PARAMETRE_REPLI} » ne sont alimentés sur ${jours} jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie aucun paramètre de destination : c'est le conteneur qu'il faut compléter, pas GA4.`,
+        correction: `Ni « ${PARAMETRE_CIBLE} » ni « ${PARAMETRE_REPLI} » ne sont alimentés sur les ${JOURS_VERDICT} derniers jours pour l'événement « ${site.linkEvent} ». La balise GTM de ce site n'envoie aucun paramètre de destination : c'est le conteneur qu'il faut compléter, pas GA4. Si la dimension vient d'être créée, laisser passer 24 h avant de conclure.`,
       };
     }));
 
     return NextResponse.json({
       jours,
+      jours_verdict: JOURS_VERDICT,
+      note_fenetres: `Le verdict d'alimentation porte sur les ${JOURS_VERDICT} derniers jours, la répartition par domaine sur ${jours} jours. Une dimension personnalisée n'est alimentée qu'à partir de sa création : la juger sur une longue fenêtre la ferait paraître vide pendant des semaines.`,
       parametre_cible: PARAMETRE_CIBLE,
       resume: {
         ok: diagnostics.filter((d) => d.statut === 'ok').length,
