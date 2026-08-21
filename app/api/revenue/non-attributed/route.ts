@@ -187,21 +187,36 @@ export async function GET(req: NextRequest) {
     }
 
     /* Totaux par partenaire, en distinguant ce qui est corrigeable par un mapping de ce
-     * qui demande un travail sur les liens : les deux ne se traitent pas au même endroit. */
+     * qui demande un travail sur les liens : les deux ne se traitent pas au même endroit.
+     *
+     * Attention au piège : un groupe clé par nom de produit n'est corrigeable QUE pour
+     * SendOwl, où le nom du produit EST la clé de mapping. Pour les autres partenaires,
+     * le nom de produit n'est qu'un repli d'affichage faute de code d'affiliation — le
+     * motif de la ligne dit lui-même « impossible de rattacher ». Les compter comme
+     * corrigeables laissait croire à un chantier de mapping là où il faut retoucher les
+     * liens. */
+    const estMappable = (g: UnassignedGroup) =>
+      g.mappingKind === 'affiliateId' || (g.mappingKind === 'productName' && g.partner === 'sendowl');
+
     const totauxParPartenaire = PARTNERS.map((p) => {
       const gs = groupsByPartner[p];
-      const sansIdentifiant = gs.filter((g) => g.mappingKind === 'aucun');
-      const mappables = gs.filter((g) => g.mappingKind !== 'aucun');
+      const mappables = gs.filter(estMappable);
+      const nonMappables = gs.filter((g) => !estMappable(g));
       const somme = (arr: UnassignedGroup[]) => Math.round(arr.reduce((s2, g) => s2 + g.revenue, 0) * 100) / 100;
       return {
         partner: p,
         revenue: somme(gs),
         count: gs.reduce((s2, g) => s2 + g.count, 0),
         nb_groupes: gs.length,
+        /** Un code d'affiliation existe : il suffit de l'ajouter sur la fiche du site. */
         revenue_corrigeable_par_mapping: somme(mappables),
-        revenue_sans_identifiant: somme(sansIdentifiant),
+        /** Aucun code exploitable : à corriger dans les liens, pas dans le dashboard. */
+        revenue_non_rattachable: somme(nonMappables),
       };
     }).filter((t) => t.count > 0).sort((a, b) => b.revenue - a.revenue);
+
+    const totalMappable = totauxParPartenaire.reduce((s2, t) => s2 + t.revenue_corrigeable_par_mapping, 0);
+    const totalNonRattachable = totauxParPartenaire.reduce((s2, t) => s2 + t.revenue_non_rattachable, 0);
 
     return NextResponse.json({
       periodType,
@@ -213,6 +228,17 @@ export async function GET(req: NextRequest) {
       tronque: groups.length >= limit
         ? `Liste tronquée à ${limit} groupes : relancer avec un limit plus élevé pour l'inventaire complet.`
         : null,
+      synthese: {
+        revenue_corrigeable_par_mapping: Math.round(totalMappable * 100) / 100,
+        revenue_non_rattachable: Math.round(totalNonRattachable * 100) / 100,
+        part_non_rattachable_pct: totalMappable + totalNonRattachable > 0
+          ? Math.round((totalNonRattachable / (totalMappable + totalNonRattachable)) * 1000) / 10
+          : null,
+        lecture:
+          'Le revenu « non rattachable » ne se corrige pas dans le dashboard : ces lignes ne portent ' +
+          'aucun code identifiant le site. Seul le balisage des liens sur les sites peut le récupérer, ' +
+          'et uniquement pour l\'avenir.',
+      },
       totauxParPartenaire,
       groupsByPartner,
       totalRevenue: Math.round(groups.reduce((s, g) => s + g.revenue, 0) * 100) / 100,
