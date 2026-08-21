@@ -23,6 +23,15 @@ const GA4_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly'];
 /** Noms qui ressemblent à un clic de sortie ou d'affiliation. */
 const MOTIFS_CANDIDATS = /click|clic|exit|outbound|affil|sortant/i;
 
+/**
+ * `click` est l'événement AUTOMATIQUE de GA4 : il compte tous les liens sortants, y
+ * compris non affiliés. Tout autre nom est un événement personnalisé, déclenché
+ * délibérément sur les liens que l'on veut suivre. Les deux ne mesurent pas la même
+ * population, et un site configuré sur `click` alors qu'un événement dédié existe
+ * mesure autre chose que ses voisins — sans qu'aucune erreur ne le signale.
+ */
+const EVENEMENT_GENERIQUE = 'click';
+
 interface EvenementGa4 {
   nom: string;
   evenements: number;
@@ -100,7 +109,7 @@ export async function GET(req: NextRequest) {
       };
 
       if (!site.ga4PropertyId) {
-        return { ...base, statut: 'sans_propriete' as const, evenements: [], candidats: [], correction: 'Aucun Property ID renseigné sur la fiche du site.' };
+        return { ...base, statut: 'sans_propriete' as const, mesure: null, evenements: [], candidats: [], alertes: [], correction: 'Aucun Property ID renseigné sur la fiche du site.' };
       }
 
       try {
@@ -108,8 +117,46 @@ export async function GET(req: NextRequest) {
         const candidats = evenements.filter((e) => MOTIFS_CANDIDATS.test(e.nom));
         const configure = evenements.find((e) => e.nom === site.linkEvent);
 
+        /* Anomalies de collecte : elles invalident les ratios bien avant le choix de
+         * l'événement, donc elles se signalent séparément du verdict. */
+        const pageView = evenements.find((e) => e.nom === 'page_view')?.evenements ?? 0;
+        const sessions = evenements.find((e) => e.nom === 'session_start')?.evenements ?? 0;
+        const alertes: string[] = [];
+        if (pageView === 0) {
+          alertes.push('Aucun page_view collecté : la balise de configuration GA4 ne se déclenche probablement pas. Les sessions et tous les ratios de cette propriété sont douteux.');
+        }
+        if (configure && sessions > 0 && configure.evenements > sessions) {
+          alertes.push(`Plus de clics sortants (${configure.evenements}) que de sessions (${sessions}) : volumétrie implausible, à vérifier avant toute lecture.`);
+        }
+
         if (configure && configure.evenements > 0) {
-          return { ...base, statut: 'ok' as const, volume_configure: configure.evenements, evenements, candidats, correction: null };
+          // Un événement dédié existe alors que le site compte l'événement générique :
+          // il mesure tous les liens sortants là où ses voisins comptent les affiliés.
+          const dedie = candidats
+            .filter((c) => c.nom !== EVENEMENT_GENERIQUE && c.evenements > 0)
+            .sort((a, b) => b.evenements - a.evenements)[0];
+
+          if (site.linkEvent === EVENEMENT_GENERIQUE && dedie) {
+            return {
+              ...base,
+              statut: 'definition_generique' as const,
+              mesure: 'liens_sortants_tous' as const,
+              volume_configure: configure.evenements,
+              evenements, candidats, alertes,
+              correction: `Le site compte « click », l'événement automatique de GA4, qui inclut TOUS les liens sortants. L'événement dédié « ${dedie.nom} » existe pourtant dans cette propriété (${dedie.evenements} événements sur ${jours} jours). Tant que ce n'est pas corrigé, le taux de clic sortant de ce site n'est pas comparable à celui des sites qui comptent un événement dédié.`,
+            };
+          }
+
+          return {
+            ...base,
+            statut: 'ok' as const,
+            mesure: site.linkEvent === EVENEMENT_GENERIQUE ? ('liens_sortants_tous' as const) : ('liens_affilies' as const),
+            volume_configure: configure.evenements,
+            evenements, candidats, alertes,
+            correction: site.linkEvent === EVENEMENT_GENERIQUE
+              ? 'Aucun événement dédié n\'existe dans cette propriété : « click » est le seul choix possible, mais il compte tous les liens sortants. Ratio non comparable aux sites disposant d\'un événement dédié.'
+              : null,
+          };
         }
 
         const meilleur = candidats.filter((c) => c.nom !== site.linkEvent)
@@ -118,16 +165,18 @@ export async function GET(req: NextRequest) {
         return {
           ...base,
           statut: configure ? ('volume_nul' as const) : ('evenement_absent' as const),
+          mesure: null,
           volume_configure: configure?.evenements ?? 0,
           evenements,
           candidats,
+          alertes,
           correction: meilleur
             ? `L'événement « ${site.linkEvent} » ${configure ? 'existe mais ne compte aucun événement' : 'n\'existe pas dans cette propriété'} sur ${jours} jours. Le candidat le plus volumineux est « ${meilleur.nom} » (${meilleur.evenements} événements). À corriger sur la fiche du site.`
             : `Aucun événement ressemblant à un clic sortant n'est collecté sur ${jours} jours. Vérifier le déclencheur GTM de cette propriété avant de changer la configuration.`,
         };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        return { ...base, statut: 'erreur' as const, evenements: [], candidats: [], correction: msg };
+        return { ...base, statut: 'erreur' as const, mesure: null, evenements: [], candidats: [], alertes: [], correction: msg };
       }
     }));
 
@@ -136,16 +185,79 @@ export async function GET(req: NextRequest) {
       compteDeService: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ?? null,
       resume: {
         ok: diagnostics.filter((d) => d.statut === 'ok').length,
+        definition_generique: diagnostics.filter((d) => d.statut === 'definition_generique').length,
         evenement_absent: diagnostics.filter((d) => d.statut === 'evenement_absent').length,
         volume_nul: diagnostics.filter((d) => d.statut === 'volume_nul').length,
         sans_propriete: diagnostics.filter((d) => d.statut === 'sans_propriete').length,
         erreur: diagnostics.filter((d) => d.statut === 'erreur').length,
+        avec_alertes: diagnostics.filter((d) => d.alertes.length > 0).map((d) => d.site),
       },
+      definitions_en_usage: [...new Set(sites.map((s) => s.linkEvent))].sort(),
       diagnostics,
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[GA4/EVENTS]', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+
+/**
+ * POST /api/ingest/ga4/events — applique une correspondance explicite site → événement.
+ *
+ * Corps : { corrections: [{ site: "Portugal", evenement: "clic_exit_link" }, …] }
+ *
+ * Rien n'est deviné : le choix entre l'événement automatique et un événement dédié est
+ * une décision de mesure, pas une déduction. La route se contente d'écrire ce qu'on lui
+ * donne, en vérifiant que le site existe.
+ */
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as { corrections?: Array<{ site: string; evenement: string }> };
+    const corrections = body?.corrections;
+    if (!Array.isArray(corrections) || corrections.length === 0) {
+      return NextResponse.json(
+        { error: 'Corps attendu : { corrections: [{ site, evenement }] }' },
+        { status: 400 },
+      );
+    }
+
+    const db = await getDatabase();
+    const col = db.collection<Site>('sites');
+    const appliquees: Array<{ site: string; avant: string; apres: string }> = [];
+    const ignorees: Array<{ site: string; raison: string }> = [];
+
+    for (const c of corrections) {
+      const nom = String(c?.site ?? '').trim();
+      const evenement = String(c?.evenement ?? '').trim();
+      if (!nom || !evenement) {
+        ignorees.push({ site: nom || '(vide)', raison: 'site ou événement manquant' });
+        continue;
+      }
+      const site = await col.findOne({ shortName: nom });
+      if (!site) {
+        ignorees.push({ site: nom, raison: 'aucun site avec ce shortName' });
+        continue;
+      }
+      if (site.linkEvent === evenement) {
+        ignorees.push({ site: nom, raison: 'déjà configuré sur cet événement' });
+        continue;
+      }
+      await col.updateOne({ shortName: nom }, { $set: { linkEvent: evenement, updatedAt: new Date() } });
+      appliquees.push({ site: nom, avant: site.linkEvent, apres: evenement });
+    }
+
+    return NextResponse.json({
+      appliquees,
+      ignorees,
+      rappel: appliquees.length
+        ? 'Relancer une ingestion GA4 en mode « full » pour recalculer l\'historique des clics sortants avec le nouvel événement.'
+        : null,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[GA4/EVENTS] POST', msg);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
