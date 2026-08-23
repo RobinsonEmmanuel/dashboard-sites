@@ -7,6 +7,23 @@ import { parseSendowlCsv, isSendowlCsv } from '../parsers/sendowl';
 import { getCsvHeaders } from '../parsers/csv-utils';
 import { recalculateBookingCommissions } from '../booking-recalculate';
 import { buildAffiliateMaps } from '../affiliate-maps';
+import { chargerTauxManquants, DERNIER_MOIS_CONNU } from '../rates/usd-eur';
+import type { Site } from '../models/site';
+
+/** Liste des mois « YYYY-MM » depuis le mois suivant `depuis` jusqu'au mois courant. */
+function moisDepuis(depuis: string): string[] {
+  const out: string[] = [];
+  const [y0, m0] = depuis.split('-').map(Number);
+  const now = new Date();
+  let y = y0;
+  let m = m0 + 1;
+  while (y < now.getUTCFullYear() || (y === now.getUTCFullYear() && m <= now.getUTCMonth() + 1)) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
 import type { AffiliationPartner, AffiliationRevenue } from '../models/revenue';
 
 export function detectRevenuePartnerFromHeaders(headers: string[]): AffiliationPartner | null {
@@ -105,7 +122,20 @@ export async function runRevenueCsvImport(input: RevenueImportInput): Promise<Re
   } else if (partner === 'tiqets') {
     result = parseTiqetsCsv(text, affiliateMaps.tiqets);
   } else if (partner === 'discovercars') {
-    result = parseDiscoverCarsCsv(text, affiliateMaps.discovercars);
+    /* DiscoverCars publie en dollars : compléter la table des taux pour les mois
+     * postérieurs à la version figée dans le code, sinon la conversion retomberait sur
+     * le dernier taux connu. Un échec réseau n'est pas bloquant. */
+    const tauxSupplement = await chargerTauxManquants(moisDepuis(DERNIER_MOIS_CONNU));
+
+    /* Domaines de nos sites : sert à distinguer un référent tiers — donc un
+     * sous-affilié, dont le revenu n'appartient à aucun de nos sites — d'un des nôtres. */
+    const sites = await db.collection<Site>('sites')
+      .find({}, { projection: { gscSiteUrl: 1 } }).toArray();
+    const domainesConnus = sites
+      .map((s2) => (s2.gscSiteUrl ?? '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, ''))
+      .filter(Boolean);
+
+    result = parseDiscoverCarsCsv(text, affiliateMaps.discovercars, { tauxSupplement, domainesConnus });
   } else {
     const soProducts = await db.collection('sendowl_products').find({}).toArray();
     const productNameMap: Record<string, string> = {};
